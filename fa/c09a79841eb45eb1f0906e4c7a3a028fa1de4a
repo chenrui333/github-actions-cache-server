@@ -1,0 +1,26 @@
+tests/stale-cache.test.ts
+  s_bca6f80d72bf4a::t_29bbd43fb18320 87-95,122-130
+  s_bca6f80d72bf4a::t_153ca778603500 8,33-69
+lib/storage.ts
+  s_bca6f80d72bf4a::t_5e318fd91037c9 276-278,301,585-589
+  s_bca6f80d72bf4a::t_d7aa66b9582aea 274,279,286,302-305
+  s_bca6f80d72bf4a::t_273c88965fd3bb 20,50-51,295-300,510,575-584,590-594,707-716,785-787
+tasks/cleanup/parts.ts
+  s_bca6f80d72bf4a::t_b39a7806c2d2b0 3,20,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "fac09a79841eb45eb1f0906e4c7a3a028fa1de4a",
+  "prompts": {},
+  "sessions": {
+    "s_bca6f80d72bf4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e51a4-58de-7060-bb75-a4a7ed6c905b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
