@@ -4,6 +4,15 @@
 
 replicaCount: 1
 
+# -- Optional Deployment update strategy override. Useful for single-replica
+# SQLite/RWO deployments that must terminate the old pod before scheduling a
+# replacement on the same volume.
+deploymentStrategy: {}
+  # type: RollingUpdate
+  # rollingUpdate:
+  #   maxSurge: 0
+  #   maxUnavailable: 1
+
 image:
   repository: ghcr.io/falcondev-oss/github-actions-cache-server
   pullPolicy: IfNotPresent
