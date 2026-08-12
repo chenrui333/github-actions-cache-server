@@ -225,6 +225,9 @@ autoscaling:
 #
 # SQLite cannot be used with multiple replicas and will produce an install error.
 persistentVolumeClaim:
+  # -- Name of an existing PVC to mount instead of creating one. When set, the
+  # chart mounts this claim and does not render a PersistentVolumeClaim.
+  existingClaim: ''
   # -- Set to true/false to explicitly enable/disable. If not set, automatically
   # enabled when storage.driver is "filesystem" or db.driver is "sqlite".
   enabled: null

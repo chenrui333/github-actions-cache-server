@@ -40,6 +40,14 @@ jobs:
 
       - run: pnpm run type-check
 
+  test-helm-chart:
+    name: ⛑ Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - run: install/kubernetes/github-actions-cache-server/tests/template.sh
+
   test-unit:
     name: 🧪 Unit Tests
     runs-on: ubuntu-latest

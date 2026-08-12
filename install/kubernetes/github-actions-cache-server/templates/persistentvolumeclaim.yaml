@@ -1,4 +1,4 @@
-{{- if eq (include "github-actions-cache-server.pvcEnabled" .) "true" -}}
+{{- if and (eq (include "github-actions-cache-server.pvcEnabled" .) "true") (not .Values.persistentVolumeClaim.existingClaim) -}}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

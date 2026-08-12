@@ -65,16 +65,19 @@ Create the name of the service account to use
 PVC name
 */}}
 {{- define "github-actions-cache-server.pvcName" -}}
-{{ include "github-actions-cache-server.fullname" . }}-data
+{{- default (printf "%s-data" (include "github-actions-cache-server.fullname" .)) .Values.persistentVolumeClaim.existingClaim -}}
 {{- end }}
 
 {{/*
 Determine if PVC should be enabled.
+If persistentVolumeClaim.existingClaim is set, mount that claim.
 If persistentVolumeClaim.enabled is explicitly set (true/false), use that value.
 Otherwise, auto-enable when storage driver is "filesystem" or db driver is "sqlite".
 */}}
 {{- define "github-actions-cache-server.pvcEnabled" -}}
-{{- if kindIs "bool" .Values.persistentVolumeClaim.enabled -}}
+{{- if .Values.persistentVolumeClaim.existingClaim -}}
+  true
+{{- else if kindIs "bool" .Values.persistentVolumeClaim.enabled -}}
   {{- .Values.persistentVolumeClaim.enabled -}}
 {{- else -}}
   {{- or (eq .Values.config.storage.driver "filesystem") (eq .Values.config.db.driver "sqlite") -}}
