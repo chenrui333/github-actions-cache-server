@@ -1,0 +1,29 @@
+install/kubernetes/github-actions-cache-server/templates/_helpers.tpl
+  s_e180641582394e::t_42aaea06475b31 68,73,78-80
+install/kubernetes/github-actions-cache-server/templates/persistentvolumeclaim.yaml
+  s_e180641582394e::t_42aaea06475b31 1
+install/kubernetes/github-actions-cache-server/values.yaml
+  s_e180641582394e::t_42aaea06475b31 228-230
+install/kubernetes/github-actions-cache-server/Chart.yaml
+  s_e180641582394e::t_42aaea06475b31 18
+.github/workflows/ci-cd.yml
+  s_e180641582394e::t_0c93a0825fc791 43-50
+install/kubernetes/github-actions-cache-server/tests/template.sh
+  s_e180641582394e::t_42aaea06475b31 1-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "aa6ca21bf82465d0c24f66c7a6ff4aae1def3252",
+  "prompts": {},
+  "sessions": {
+    "s_e180641582394e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fef4f-d244-7182-a5f5-935c5d2b9b91",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

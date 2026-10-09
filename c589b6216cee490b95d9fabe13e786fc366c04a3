@@ -1,0 +1,23 @@
+install/kubernetes/github-actions-cache-server/values.yaml
+  s_07542d0415de8a::t_8ba2d579c7d71d 7-15
+install/kubernetes/github-actions-cache-server/Chart.yaml
+  s_07542d0415de8a::t_79b72d3b6853d7 18
+install/kubernetes/github-actions-cache-server/templates/deployment.yaml
+  s_07542d0415de8a::t_8ba2d579c7d71d 16-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "c589b6216cee490b95d9fabe13e786fc366c04a3",
+  "prompts": {},
+  "sessions": {
+    "s_07542d0415de8a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e6286-c936-72b2-9197-6ee27456eaed",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
