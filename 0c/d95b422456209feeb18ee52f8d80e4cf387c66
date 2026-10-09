@@ -1,0 +1,22 @@
+tests/eager-merge.test.ts
+  h_9df9c32c3f321d 15
+tests/proxy-backpressure.test.ts
+  h_9df9c32c3f321d 1-113
+routes/devstoreaccount1/upload/[uploadId].put.ts
+  h_9df9c32c3f321d 38-39,41
+tests/cleanup-lifecycle.test.ts
+  h_9df9c32c3f321d 97
+lib/storage.ts
+  h_9df9c32c3f321d 328,344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0cd95b422456209feeb18ee52f8d80e4cf387c66",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
