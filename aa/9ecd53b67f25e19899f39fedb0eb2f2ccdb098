@@ -1,0 +1,14 @@
+tests/proxy-backpressure.test.ts
+  h_9df9c32c3f321d 1-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aa9ecd53b67f25e19899f39fedb0eb2f2ccdb098",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
