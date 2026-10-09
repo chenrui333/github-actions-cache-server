@@ -1,0 +1,26 @@
+lib/storage.ts
+  h_9df9c32c3f321d 363,379
+routes/devstoreaccount1/upload/[uploadId].put.ts
+  h_9df9c32c3f321d 38-39,41
+tests/cleanup-lifecycle.test.ts
+  h_9df9c32c3f321d 97
+tests/download-leases.test.ts
+  h_9df9c32c3f321d 31
+tests/eager-merge.test.ts
+  h_9df9c32c3f321d 15
+tests/proxy-backpressure.test.ts
+  h_9df9c32c3f321d 1-146
+tests/range-download.test.ts
+  h_9df9c32c3f321d 32-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7afd3a5de19d5103730db26f9f8904c25ec928ec",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
