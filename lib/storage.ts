@@ -8,7 +8,7 @@ import { createReadStream, createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import { Agent } from 'node:https'
 import path from 'node:path'
-import { PassThrough, Readable } from 'node:stream'
+import { addAbortSignal, PassThrough, Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createSingletonPromise } from '@antfu/utils'
 import {
@@ -125,11 +125,12 @@ export class Storage {
     if (actualPartCount < location.partCount) throw new ObjectNotFoundError(partsFolder)
   }
 
-  private async downloadFromCacheEntryLocation(location: StorageLocation) {
-    if (location.mergedAt) return this.adapter.createDownloadStream(`${location.folderName}/merged`)
+  private async downloadFromCacheEntryLocation(location: StorageLocation, signal?: AbortSignal) {
+    if (location.mergedAt)
+      return this.adapter.createDownloadStream(`${location.folderName}/merged`, signal)
 
     await this.ensurePartsExist(location)
-    return Readable.from(this.streamParts(location))
+    return Readable.from(this.streamParts(location, signal))
   }
 
   private async pumpPartsToStreams(
@@ -153,15 +154,22 @@ export class Storage {
     await globalThis.gc?.()
   }
 
-  private async *streamParts(location: StorageLocation) {
+  private async *streamParts(location: StorageLocation, signal?: AbortSignal) {
     if (location.partsDeletedAt) throw new Error('No parts to feed for location with deleted parts')
 
     for (let i = 0; i < location.partCount; i++) {
       const partStream = await this.adapter.createDownloadStream(
         `${location.folderName}/parts/${i}`,
+        signal,
       )
 
-      for await (const chunk of partStream) yield chunk
+      // Destroy on every exit — consumer gone, read error, abort — so an
+      // abandoned part never keeps its backend connection.
+      try {
+        for await (const chunk of partStream) yield chunk
+      } finally {
+        partStream.destroy()
+      }
 
       await globalThis.gc?.()
     }
@@ -410,7 +418,15 @@ export class Storage {
     }
   }
 
-  async download(cacheEntryId: string): Promise<Readable | undefined> {
+  /**
+   * `signal` cancels the backend read when the client goes away. The background
+   * merge an unmerged download starts is deliberately not tied to it: the merge
+   * outlives the request that triggered it.
+   */
+  async download(
+    cacheEntryId: string,
+    { signal }: { signal?: AbortSignal } = {},
+  ): Promise<Readable | undefined> {
     const protectedLocation = await this.db.transaction().execute(async (tx) => {
       let query = tx
         .selectFrom('storage_locations')
@@ -437,7 +453,7 @@ export class Storage {
 
     try {
       if (storageLocation.mergedAt) {
-        const stream = await this.downloadFromCacheEntryLocation(storageLocation)
+        const stream = await this.downloadFromCacheEntryLocation(storageLocation, signal)
         return this.protectDownloadStream(stream, readerLeaseId)
       }
 
@@ -445,7 +461,7 @@ export class Storage {
 
       const mergeToken = await acquireMergeLease(this.db, storageLocation.id)
       if (!mergeToken) {
-        const stream = await this.downloadFromCacheEntryLocation(storageLocation)
+        const stream = await this.downloadFromCacheEntryLocation(storageLocation, signal)
         return this.protectDownloadStream(stream, readerLeaseId)
       }
 
@@ -736,7 +752,12 @@ export class Storage {
 export const getStorage = createSingletonPromise(async () => Storage.fromEnv())
 
 export interface StorageAdapter {
-  createDownloadStream(objectName: string): Promise<Readable>
+  /**
+   * `signal` aborts the read: a pending request is cancelled, a returned
+   * stream is destroyed. Adapters that cannot cancel may ignore it; callers
+   * still destroy the stream they get back.
+   */
+  createDownloadStream(objectName: string, signal?: AbortSignal): Promise<Readable>
   /**
    * Uploads must be atomically visible: an object never exists partially, and
    * overwriting an object never disturbs active readers of the previous
@@ -779,7 +800,7 @@ function accumulateFolder(
   folders.set(folderName, existing)
 }
 
-class S3Adapter implements StorageAdapter {
+export class S3Adapter implements StorageAdapter {
   static async fromEnv(env: Extract<Env, { STORAGE_DRIVER: 's3' }>) {
     const bucket = env.STORAGE_S3_BUCKET
     const agent = new Agent({
@@ -888,13 +909,14 @@ class S3Adapter implements StorageAdapter {
     return deleted
   }
 
-  async createDownloadStream(objectName: string) {
+  async createDownloadStream(objectName: string, signal?: AbortSignal) {
     try {
       const response = await this.s3.send(
         new GetObjectCommand({
           Bucket: this.bucket,
           Key: `${this.keyPrefix}/${objectName}`,
         }),
+        { abortSignal: signal },
       )
       if (!response.Body) throw new Error('No body in S3 get object response')
 
@@ -1051,14 +1073,15 @@ class FileSystemAdapter implements StorageAdapter {
     return folder
   }
 
-  async createDownloadStream(objectName: string) {
+  async createDownloadStream(objectName: string, signal?: AbortSignal) {
     const filePath = this.safePath(objectName)
     try {
       await fs.access(filePath)
     } catch {
       throw new ObjectNotFoundError(objectName)
     }
-    return createReadStream(filePath)
+    signal?.throwIfAborted()
+    return createReadStream(filePath, { signal })
   }
 
   async objectExists(objectName: string) {
@@ -1166,11 +1189,13 @@ class GcsAdapter implements StorageAdapter {
     this.bucket = gcs.bucket(bucket)
   }
 
-  async createDownloadStream(objectName: string) {
+  async createDownloadStream(objectName: string, signal?: AbortSignal) {
     const file = this.bucket.file(`${this.keyPrefix}/${objectName}`)
     const [exists] = await file.exists()
     if (!exists) throw new ObjectNotFoundError(objectName)
-    return file.createReadStream()
+    signal?.throwIfAborted()
+    const stream = file.createReadStream()
+    return signal ? addAbortSignal(signal, stream) : stream
   }
 
   async objectExists(objectName: string) {
