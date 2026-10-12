@@ -805,7 +805,7 @@ export class S3Adapter implements StorageAdapter {
     const bucket = env.STORAGE_S3_BUCKET
     const agent = new Agent({
       keepAlive: true,
-      maxSockets: 50,
+      maxSockets: env.STORAGE_S3_MAX_SOCKETS,
       keepAliveMsecs: 1000,
     })
     const s3 = new S3Client({
