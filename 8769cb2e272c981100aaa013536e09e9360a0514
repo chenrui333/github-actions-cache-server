@@ -1,0 +1,14 @@
+tests/setup.ts
+  h_9df9c32c3f321d 13,86-87,166-170,176,182-197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8769cb2e272c981100aaa013536e09e9360a0514",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

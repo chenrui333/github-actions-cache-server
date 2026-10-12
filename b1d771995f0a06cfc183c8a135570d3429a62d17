@@ -1,0 +1,14 @@
+.github/workflows/patch-image.yml
+  h_9df9c32c3f321d 3-6,34,37-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b1d771995f0a06cfc183c8a135570d3429a62d17",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
