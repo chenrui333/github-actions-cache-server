@@ -1,0 +1,18 @@
+lib/storage.ts
+  h_9df9c32c3f321d 11,128-130,133,157,163,166-172,421-429,456,464,755-760,803,912,919,1076,1083-1084,1192,1196-1198
+routes/download/[cacheEntryId].ts
+  h_9df9c32c3f321d 1,11-16,26,28-35,37,39-58,60-66,73,78-79
+tests/download-client-gone.test.ts
+  h_9df9c32c3f321d 1-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8c95262eaeed406855710d6e2da4720eb017a846",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
