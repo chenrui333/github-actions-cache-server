@@ -28,6 +28,10 @@ volumes:
   cache-data:
 ```
 
+Multipart downloads and background merges use stream backpressure and normal V8 garbage collection.
+The server does not require Node's `--expose-gc` flag or force collection between parts.
+Aggregate memory usage still depends on workload concurrency and configured storage buffers.
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈
