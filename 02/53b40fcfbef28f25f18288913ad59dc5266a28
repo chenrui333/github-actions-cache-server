@@ -1,0 +1,18 @@
+Dockerfile
+  h_9df9c32c3f321d 39
+README.md
+  h_9df9c32c3f321d 31-34
+tests/cleanup-lifecycle.test.ts
+  h_9df9c32c3f321d 15-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0253b40fcfbef28f25f18288913ad59dc5266a28",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
