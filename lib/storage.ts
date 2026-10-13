@@ -157,8 +157,6 @@ export class Storage {
 
     responseStream.end()
     mergerStream.end()
-
-    await globalThis.gc?.()
   }
 
   private async *streamParts(location: StorageLocation, signal?: AbortSignal) {
@@ -177,8 +175,6 @@ export class Storage {
       } finally {
         partStream.destroy()
       }
-
-      await globalThis.gc?.()
     }
   }
 

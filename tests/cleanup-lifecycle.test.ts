@@ -12,6 +12,89 @@ describe('cleanup lifecycle', () => {
   })
   afterAll(() => vi.unstubAllGlobals())
 
+  test('concurrent multipart restores preserve exact bytes before and after merging', async () => {
+    const db = await getDatabase()
+    const storage = await Storage.fromEnv()
+    const entries = Array.from({ length: 4 }, (_, entryIndex) => ({
+      key: randomUUID(),
+      version: 'v1',
+      scope: 'refs/heads/main',
+      repoId: '123',
+      parts: Array.from({ length: 8 }, (_, partIndex) =>
+        Buffer.from(
+          Array.from(
+            { length: 16 * 1024 + partIndex },
+            (_, offset) => (entryIndex * 31 + partIndex * 17 + offset) % 256,
+          ),
+        ),
+      ),
+    }))
+
+    try {
+      const caches = []
+      for (const entry of entries) {
+        const upload = await storage.createUpload(entry)
+        expect(upload).toBeDefined()
+        for (const [partIndex, part] of entry.parts.entries())
+          await storage.uploadPart(upload!.id, partIndex, Readable.from(part))
+        await storage.completeUpload(entry)
+        const cache = await storage.matchCacheEntry({
+          keys: [entry.key],
+          version: entry.version,
+          scopes: [entry.scope],
+          repoId: entry.repoId,
+        })
+        expect(cache).toBeDefined()
+        caches.push({ cache: cache!.match, expected: Buffer.concat(entry.parts) })
+      }
+
+      for (const phase of ['cold', 'warm']) {
+        await Promise.all(
+          caches.map(async ({ cache, expected }) => {
+            const stream = await storage.download(cache.id)
+            expect(stream, phase).toBeDefined()
+            const chunks: Buffer[] = []
+            for await (const chunk of stream!) chunks.push(Buffer.from(chunk))
+            expect(Buffer.concat(chunks), phase).toEqual(expected)
+          }),
+        )
+        await storage.waitForOngoingMerges()
+        for (const { cache } of caches) {
+          const location = await db
+            .selectFrom('storage_locations')
+            .where('id', '=', cache.locationId)
+            .select('mergedAt')
+            .executeTakeFirstOrThrow()
+          expect(location.mergedAt, phase).not.toBeNull()
+        }
+      }
+    } finally {
+      await storage.waitForOngoingMerges()
+      const locations = await db
+        .selectFrom('cache_entries')
+        .innerJoin('storage_locations', 'storage_locations.id', 'cache_entries.locationId')
+        .where(
+          'cache_entries.key',
+          'in',
+          entries.map(({ key }) => key),
+        )
+        .select(['storage_locations.id', 'storage_locations.folderName'])
+        .execute()
+      for (const { id, folderName } of locations) {
+        await db.deleteFrom('storage_locations').where('id', '=', id).execute()
+        await storage.adapter.deleteFolder(folderName)
+      }
+      await db
+        .deleteFrom('uploads')
+        .where(
+          'key',
+          'in',
+          entries.map(({ key }) => key),
+        )
+        .execute()
+    }
+  })
+
   test('evicts least-recently-used entries to 90% only after exceeding the budget', async () => {
     const db = await getDatabase()
     const storage = await Storage.fromEnv()
