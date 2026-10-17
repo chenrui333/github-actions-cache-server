@@ -1,0 +1,16 @@
+lib/storage.ts
+  h_9df9c32c3f321d 3,60-75,166-171,173,175-178,180-181,184
+tests/download-merge-sink-gone.test.ts
+  h_9df9c32c3f321d 1-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "87896ffe0f339970a424a50eaec9c8913e2e81fe",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
