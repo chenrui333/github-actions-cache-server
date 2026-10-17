@@ -1,0 +1,14 @@
+lib/metrics.ts
+  h_9df9c32c3f321d 255,257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e2450d59fb72e90cbe8a9f53fcb63343c57c75b4",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
