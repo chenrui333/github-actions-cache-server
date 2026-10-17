@@ -154,63 +154,77 @@ export const cacheLeases = new Gauge({
 
 // --- S3 client ---------------------------------------------------------------
 
-const s3Agents: Agent[] = []
+/** reads: GetObject bodies; writes: uploads and Merges; control: HEAD/LIST/DELETE. */
+export type S3Pool = 'reads' | 'writes' | 'control'
+
+const s3Agents: { pool: S3Pool; agent: Agent }[] = []
 
 export const s3HttpSockets = new Gauge({
   name: 's3_http_sockets',
-  help: 'S3 client agent sockets by state (active: assigned to a request, idle: kept alive in the pool).',
-  labelNames: ['state'],
+  help: 'S3 agent sockets by pool and state (active: assigned to a request, idle: kept alive). Counts the agent view; a socket the remote end already closed still reads active until it is read or destroyed.',
+  labelNames: ['pool', 'state'],
   registers: [metricsRegistry],
   collect() {
-    if (s3Agents.length === 0) return
-    let active = 0
-    let idle = 0
-    for (const agent of s3Agents) {
-      for (const sockets of Object.values(agent.sockets)) active += sockets?.length ?? 0
-      for (const sockets of Object.values(agent.freeSockets)) idle += sockets?.length ?? 0
+    const counts = new Map<S3Pool, { active: number; idle: number }>()
+    for (const { pool, agent } of s3Agents) {
+      const count = counts.get(pool) ?? { active: 0, idle: 0 }
+      for (const sockets of Object.values(agent.sockets)) count.active += sockets?.length ?? 0
+      for (const sockets of Object.values(agent.freeSockets)) count.idle += sockets?.length ?? 0
+      counts.set(pool, count)
     }
-    s3HttpSockets.set({ state: 'active' }, active)
-    s3HttpSockets.set({ state: 'idle' }, idle)
+    for (const [pool, { active, idle }] of counts) {
+      s3HttpSockets.set({ pool, state: 'active' }, active)
+      s3HttpSockets.set({ pool, state: 'idle' }, idle)
+    }
   },
 })
 
 export const s3HttpQueuedRequests = new Gauge({
   name: 's3_http_queued_requests',
-  help: 'S3 requests waiting for a free agent socket (maxSockets reached). Sustained > 0 means pool starvation.',
+  help: 'Live S3 requests waiting for a free agent socket, by pool (maxSockets reached). Sustained > 0 means pool starvation.',
+  labelNames: ['pool'],
   registers: [metricsRegistry],
   collect() {
-    if (s3Agents.length === 0) return
-    let queued = 0
-    for (const agent of s3Agents)
-      for (const requests of Object.values(agent.requests)) queued += requests?.length ?? 0
-    s3HttpQueuedRequests.set(queued)
+    const counts = new Map<S3Pool, number>()
+    for (const { pool, agent } of s3Agents) {
+      let queued = counts.get(pool) ?? 0
+      // Aborted requests stay in the queue until a socket frees; Node then skips them.
+      for (const requests of Object.values(agent.requests))
+        queued += requests?.filter((req) => !req.destroyed).length ?? 0
+      counts.set(pool, queued)
+    }
+    for (const [pool, queued] of counts) s3HttpQueuedRequests.set({ pool }, queued)
   },
 })
 
 export const s3HttpMaxSockets = new Gauge({
   name: 's3_http_max_sockets',
-  help: 'Configured S3 agent socket limit (STORAGE_S3_MAX_SOCKETS).',
+  help: 'Configured S3 agent socket limit by pool (STORAGE_S3_MAX_SOCKETS, STORAGE_S3_CONTROL_MAX_SOCKETS).',
+  labelNames: ['pool'],
   registers: [metricsRegistry],
 })
 
 export const s3SocketWaitSeconds = new Histogram({
   name: 's3_socket_wait_seconds',
-  help: 'Time an S3 request waited for an agent socket before it could be sent.',
+  help: 'Time an S3 request waited for an agent socket, by pool. Requests aborted while queued are not observed; pair with s3_http_queued_requests.',
+  labelNames: ['pool'],
   buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60],
   registers: [metricsRegistry],
 })
 
 /** Exposes `agent`'s pool on /metrics and times how long each request waits for a socket. */
-export function instrumentS3Agent(agent: Agent) {
-  s3Agents.push(agent)
-  s3HttpMaxSockets.set(agent.maxSockets)
+export function instrumentS3Agent(pool: S3Pool, agent: Agent) {
+  s3Agents.push({ pool, agent })
+  s3HttpMaxSockets.set({ pool }, agent.maxSockets)
   // `addRequest` is where Node's Agent either hands out a socket or queues the
   // request; it is undocumented but the hook every agent wrapper relies on.
   const pooled = agent as Agent & { addRequest: (req: ClientRequest, options: unknown) => void }
   const addRequest = pooled.addRequest.bind(agent)
   pooled.addRequest = (req, options) => {
     const queuedAt = performance.now()
-    req.once('socket', () => s3SocketWaitSeconds.observe((performance.now() - queuedAt) / 1000))
+    req.once('socket', () =>
+      s3SocketWaitSeconds.observe({ pool }, (performance.now() - queuedAt) / 1000),
+    )
     addRequest(req, options)
   }
 }

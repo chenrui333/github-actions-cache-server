@@ -90,13 +90,17 @@ describe('prometheus metrics', () => {
     if (process.env.VITEST_STORAGE_DRIVER === 's3') {
       const headOk = 's3_requests_total{command="HeadObject",outcome="ok"}'
       expect(readCounter(after, headOk)).toBeGreaterThan(readCounter(before, headOk))
-      // The test endpoint is http://: its sockets must come from the configured,
-      // instrumented pool rather than the SDK's default agent.
-      const pooled =
-        readCounter(after, 's3_http_sockets{state="active"}') +
-        readCounter(after, 's3_http_sockets{state="idle"}')
-      expect(pooled).toBeGreaterThan(0)
-      expect(readCounter(after, 's3_http_max_sockets')).toBe(50)
+      // Upload, restore and lookup each went through their own configured,
+      // instrumented pool (the test endpoint is http://, so this also proves the
+      // SDK's default agent is not used).
+      for (const pool of ['writes', 'reads', 'control']) {
+        const pooled =
+          readCounter(after, `s3_http_sockets{pool="${pool}",state="active"}`) +
+          readCounter(after, `s3_http_sockets{pool="${pool}",state="idle"}`)
+        expect(pooled, `${pool} sockets`).toBeGreaterThan(0)
+      }
+      expect(readCounter(after, 's3_http_max_sockets{pool="reads"}')).toBe(50)
+      expect(readCounter(after, 's3_http_max_sockets{pool="control"}')).toBe(16)
     }
   })
 })

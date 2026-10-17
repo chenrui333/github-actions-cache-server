@@ -195,7 +195,10 @@ describe('s3 adapter', () => {
       credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
       requestHandler: new NodeHttpHandler({ httpAgent: agent }),
     })
-    const adapter = new S3Adapter({ s3, bucket: 'vitest' })
+    const adapter = new S3Adapter({
+      clients: { reads: s3, writes: s3, control: s3 },
+      bucket: 'vitest',
+    })
     try {
       const controller = new AbortController()
       const download = adapter.createDownloadStream('entry/merged', controller.signal)

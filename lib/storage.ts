@@ -2,7 +2,7 @@
 import type { Kysely } from 'kysely'
 import type { Writable } from 'node:stream'
 import type { Database, StorageLocation } from './db'
-import type { MergeKind } from './metrics'
+import type { MergeKind, S3Pool } from './metrics'
 import type { Env } from './schemas'
 import { randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
@@ -894,52 +894,73 @@ function accumulateFolder(
   folders.set(folderName, existing)
 }
 
+/** One S3 client per socket pool; see `S3Adapter.fromEnv`. */
+interface S3Clients {
+  reads: S3Client
+  writes: S3Client
+  control: S3Client
+}
+
 export class S3Adapter implements StorageAdapter {
   static async fromEnv(env: Extract<Env, { STORAGE_DRIVER: 's3' }>) {
     const bucket = env.STORAGE_S3_BUCKET
-    // Both protocols get the configured pool: NodeHttpHandler picks the agent by
-    // endpoint scheme, and an http:// endpoint (MinIO, RustFS, an in-cluster
-    // gateway) would otherwise fall back to the SDK's default agent and ignore
-    // STORAGE_S3_MAX_SOCKETS.
-    const agentOptions = {
-      keepAlive: true,
-      maxSockets: env.STORAGE_S3_MAX_SOCKETS,
-      keepAliveMsecs: 1000,
+    // One socket pool per kind of work. A Merge holds a paused part GET (reads)
+    // while it waits for a socket to upload (writes); in one shared pool, as many
+    // concurrent Merges as sockets deadlock it, and lookup HEADs queue behind
+    // every bulk transfer. Write holders never wait on reads and control requests
+    // hold sockets only briefly, so no cycle can form across pools.
+    const createClient = (pool: S3Pool, maxSockets: number, queueTimeoutMs = 0) => {
+      // Both protocols get the pool: NodeHttpHandler picks the agent by endpoint
+      // scheme, and an http:// endpoint would otherwise use the SDK's default agent.
+      const agentOptions = { keepAlive: true, maxSockets, keepAliveMsecs: 1000 }
+      const httpAgent = new HttpAgent(agentOptions)
+      const httpsAgent = new HttpsAgent(agentOptions)
+      instrumentS3Agent(pool, httpAgent)
+      instrumentS3Agent(pool, httpsAgent)
+      const client = new S3Client({
+        forcePathStyle: true,
+        region: env.AWS_REGION,
+        requestHandler: new NodeHttpHandler({
+          httpAgent,
+          httpsAgent,
+          socketTimeout: env.STORAGE_S3_SOCKET_TIMEOUT_MS,
+          // Bounds the wait for a socket plus the TCP connect; cleared as soon as
+          // a kept-alive socket is assigned. 0 disables it.
+          connectionTimeout: queueTimeoutMs,
+        }),
+      })
+      // `initialize` wraps the whole command (retries, socket wait, signing), so the
+      // duration is what callers wait for; a GetObject settles at response headers.
+      client.middlewareStack.add(
+        (next, context) => async (args) => {
+          const startedAt = performance.now()
+          try {
+            const result = await next(args)
+            const { $metadata } = result.output as { $metadata?: { attempts?: number } }
+            observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts)
+            return result
+          } catch (err) {
+            const { $metadata } = err as { $metadata?: { attempts?: number } }
+            observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts, err)
+            throw err
+          }
+        },
+        { step: 'initialize', name: 'cacheServerMetrics' },
+      )
+      return client
     }
-    const httpAgent = new HttpAgent(agentOptions)
-    const httpsAgent = new HttpsAgent(agentOptions)
-    instrumentS3Agent(httpAgent)
-    instrumentS3Agent(httpsAgent)
-    const s3 = new S3Client({
-      forcePathStyle: true,
-      region: env.AWS_REGION,
-      requestHandler: new NodeHttpHandler({
-        httpAgent,
-        httpsAgent,
-        socketTimeout: env.STORAGE_S3_SOCKET_TIMEOUT_MS,
-      }),
-    })
-    // `initialize` wraps the whole command (retries, socket wait, signing), so the
-    // duration is what callers wait for; a GetObject settles at response headers.
-    s3.middlewareStack.add(
-      (next, context) => async (args) => {
-        const startedAt = performance.now()
-        try {
-          const result = await next(args)
-          const { $metadata } = result.output as { $metadata?: { attempts?: number } }
-          observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts)
-          return result
-        } catch (err) {
-          const { $metadata } = err as { $metadata?: { attempts?: number } }
-          observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts, err)
-          throw err
-        }
-      },
-      { step: 'initialize', name: 'cacheServerMetrics' },
-    )
+    const clients = {
+      reads: createClient('reads', env.STORAGE_S3_MAX_SOCKETS),
+      writes: createClient('writes', env.STORAGE_S3_MAX_SOCKETS),
+      control: createClient(
+        'control',
+        env.STORAGE_S3_CONTROL_MAX_SOCKETS,
+        env.STORAGE_S3_CONTROL_QUEUE_TIMEOUT_MS,
+      ),
+    }
 
     try {
-      await s3.send(
+      await clients.control.send(
         new HeadBucketCommand({
           Bucket: bucket,
         }),
@@ -951,10 +972,10 @@ export class S3Adapter implements StorageAdapter {
       throw err
     }
 
-    return new S3Adapter({ s3, bucket })
+    return new S3Adapter({ clients, bucket })
   }
 
-  private s3
+  private clients
   private bucket
   private keyPrefix = 'gh-actions-cache'
 
@@ -966,12 +987,14 @@ export class S3Adapter implements StorageAdapter {
     run: async (folderName: string, partCount: number) => {
       const Bucket = this.bucket
       const Key = `${this.keyPrefix}/${folderName}/merged`
-      const { UploadId } = await this.s3.send(new CreateMultipartUploadCommand({ Bucket, Key }))
+      const { UploadId } = await this.clients.writes.send(
+        new CreateMultipartUploadCommand({ Bucket, Key }),
+      )
       if (!UploadId) throw new Error('S3 did not return an UploadId')
       try {
         const Parts = []
         for (let PartNumber = 1; PartNumber <= partCount; PartNumber++) {
-          const copy = await this.s3.send(
+          const copy = await this.clients.writes.send(
             new UploadPartCopyCommand({
               Bucket,
               Key,
@@ -982,11 +1005,11 @@ export class S3Adapter implements StorageAdapter {
           )
           Parts.push({ PartNumber, ETag: copy.CopyPartResult?.ETag })
         }
-        await this.s3.send(
+        await this.clients.writes.send(
           new CompleteMultipartUploadCommand({ Bucket, Key, UploadId, MultipartUpload: { Parts } }),
         )
       } catch (err) {
-        await this.s3
+        await this.clients.writes
           .send(new AbortMultipartUploadCommand({ Bucket, Key, UploadId }))
           .catch(() => {})
         throw err
@@ -994,8 +1017,8 @@ export class S3Adapter implements StorageAdapter {
     },
   }
 
-  constructor({ bucket, s3 }: { s3: S3Client; bucket: string }) {
-    this.s3 = s3
+  constructor({ bucket, clients }: { clients: S3Clients; bucket: string }) {
+    this.clients = clients
     this.bucket = bucket
   }
 
@@ -1003,7 +1026,7 @@ export class S3Adapter implements StorageAdapter {
     let continuationToken: string | undefined
 
     do {
-      const response = await this.s3.send(
+      const response = await this.clients.control.send(
         new ListObjectsV2Command({
           Bucket: this.bucket,
           Prefix: prefix,
@@ -1026,7 +1049,7 @@ export class S3Adapter implements StorageAdapter {
   private async deleteByPrefix(prefix: string) {
     const deleted = { objects: 0, bytes: 0 }
     while (true) {
-      const listResponse = await this.s3.send(
+      const listResponse = await this.clients.control.send(
         new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix }),
       )
       if (!listResponse.Contents || listResponse.Contents.length === 0) break
@@ -1042,7 +1065,7 @@ export class S3Adapter implements StorageAdapter {
           listResponse.Contents.filter((obj): obj is { Key: string } => !!obj.Key),
           1000,
         ).map((chunkedObjects) =>
-          this.s3.send(
+          this.clients.control.send(
             new DeleteObjectsCommand({
               Bucket: this.bucket,
               Delete: {
@@ -1068,7 +1091,7 @@ export class S3Adapter implements StorageAdapter {
 
   async createDownloadStream(objectName: string, signal?: AbortSignal) {
     try {
-      const response = await this.s3.send(
+      const response = await this.clients.reads.send(
         new GetObjectCommand({
           Bucket: this.bucket,
           Key: `${this.keyPrefix}/${objectName}`,
@@ -1086,7 +1109,7 @@ export class S3Adapter implements StorageAdapter {
 
   async objectExists(objectName: string) {
     try {
-      await this.s3.send(
+      await this.clients.control.send(
         new HeadObjectCommand({
           Bucket: this.bucket,
           Key: `${this.keyPrefix}/${objectName}`,
@@ -1114,7 +1137,7 @@ export class S3Adapter implements StorageAdapter {
 
   async uploadStream(objectName: string, iterator: AsyncIterable<Uint8Array>) {
     await new S3Upload({
-      client: this.s3,
+      client: this.clients.writes,
       params: {
         Bucket: this.bucket,
         Key: `${this.keyPrefix}/${objectName}`,
@@ -1170,7 +1193,7 @@ export class S3Adapter implements StorageAdapter {
 
   async createDownloadUrl(objectName: string, expiresAt: number) {
     return getSignedUrl(
-      this.s3,
+      this.clients.reads,
       new GetObjectCommand({
         Bucket: this.bucket,
         Key: `${this.keyPrefix}/${objectName}`,
