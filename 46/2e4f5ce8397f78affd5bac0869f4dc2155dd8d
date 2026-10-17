@@ -1,0 +1,14 @@
+README.md
+  h_9df9c32c3f321d 35-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "462e4f5ce8397f78affd5bac0869f4dc2155dd8d",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
