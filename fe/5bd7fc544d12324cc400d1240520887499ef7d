@@ -1,0 +1,30 @@
+lib/metrics.ts
+  h_9df9c32c3f321d 1-2,4,47-156,157-160,161-163,164-165,166-167,168-177,178,179-183,184-185,186-187,188-196,197-201,202-203,204-208,209-210,211-215,216-218,219-224,225-227,228-268,269,270,271,272-288
+lib/storage.ts
+  h_9df9c32c3f321d 5,39,268,283,305,308,349,601,897-903,907-959,963,975,978,990-992,997,1008,1012,1020-1021,1029,1052,1068,1094,1112,1140,1196
+routes/download/[cacheEntryId].ts
+  h_9df9c32c3f321d 5,56,61,68,74-76
+routes/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL.post.ts
+  h_9df9c32c3f321d 3,24-37
+tests/metrics.test.ts
+  h_9df9c32c3f321d 74-92,93-103,104
+lib/schemas.ts
+  h_9df9c32c3f321d 9-10
+tests/download-client-gone.test.ts
+  h_9df9c32c3f321d 198-201
+tests/merge-socket-pool.test.ts
+  h_9df9c32c3f321d 1-92
+tests/setup.ts
+  h_9df9c32c3f321d 88-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fe5bd7fc544d12324cc400d1240520887499ef7d",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
