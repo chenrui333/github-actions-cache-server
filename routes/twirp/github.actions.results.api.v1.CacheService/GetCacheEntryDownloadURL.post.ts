@@ -1,6 +1,6 @@
 import { map, pipe, prop, sortBy } from 'remeda'
 import { z } from 'zod'
-import { cacheRequestsTotal } from '~/lib/metrics'
+import { cacheLookupDurationSeconds, cacheRequestsTotal } from '~/lib/metrics'
 import { getCacheScope } from '~/lib/scope'
 import { getStorage } from '~/lib/storage'
 import { readTwirpRequest, sendTwirpResponse, TwirpMessage } from '~/lib/twirp'
@@ -21,12 +21,20 @@ export default defineEventHandler(async (event) => {
   )
 
   const storage = await getStorage()
-  const match = await storage.getCacheEntryWithDownloadUrl({
-    keys: [key, ...(restore_keys ?? [])],
-    version,
-    scopes: pipe(scopes, sortBy([prop('Permission'), 'desc']), map(prop('Scope'))),
-    repoId,
-  })
+  const lookupTimer = cacheLookupDurationSeconds.startTimer()
+  let match
+  try {
+    match = await storage.getCacheEntryWithDownloadUrl({
+      keys: [key, ...(restore_keys ?? [])],
+      version,
+      scopes: pipe(scopes, sortBy([prop('Permission'), 'desc']), map(prop('Scope'))),
+      repoId,
+    })
+  } catch (err) {
+    lookupTimer({ result: 'error' })
+    throw err
+  }
+  lookupTimer({ result: match ? 'hit' : 'miss' })
 
   cacheRequestsTotal.inc({ result: match ? 'hit' : 'miss' })
 

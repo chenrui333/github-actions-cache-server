@@ -2,6 +2,7 @@
 import type { Kysely } from 'kysely'
 import type { Writable } from 'node:stream'
 import type { Database, StorageLocation } from './db'
+import type { MergeKind } from './metrics'
 import type { Env } from './schemas'
 import { randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
@@ -35,6 +36,7 @@ import { getDatabase, retryOnLockConflict } from './db'
 import { env } from './env'
 import { generateNumberId } from './helpers'
 import { logger } from './logger'
+import { instrumentS3Agent, observeS3Request, trackMerge } from './metrics'
 import {
   acquireMergeLease,
   createReaderLease,
@@ -263,7 +265,7 @@ export class Storage {
    * is safe (ADR-0004). The returned promise never rejects: failures are logged
    * and the merge state rolled back.
    */
-  private async startMerge(location: StorageLocation, write: () => Promise<void>) {
+  private async startMerge(location: StorageLocation, kind: MergeKind, write: () => Promise<void>) {
     const mergeToken = await acquireMergeLease(this.db, location.id)
     if (!mergeToken) return false
 
@@ -278,6 +280,7 @@ export class Storage {
     }, LEASE_RENEWAL_MS)
     renewalTimer.unref()
 
+    const finishMerge = trackMerge(kind)
     const mergePromise = write()
       .then(async () => {
         // The merged object is already written, so losing a deadlock here must
@@ -299,8 +302,10 @@ export class Storage {
               .execute()
           }),
         )
+        finishMerge('success')
       })
       .catch(async (err) => {
+        finishMerge('failure')
         logger.error(`Merge failed for storage location ${location.id}`, { error: err })
         await this.db
           .updateTable('storage_locations')
@@ -341,7 +346,7 @@ export class Storage {
           bytes <= compose.maxPartBytes &&
           (index === partSizes.length - 1 || bytes >= compose.minPartBytes),
       )
-    await this.startMerge(location, () =>
+    await this.startMerge(location, composable ? 'compose' : 'stream', () =>
       composable
         ? compose.run(location.folderName, location.partCount)
         : this.adapter.uploadStream(
@@ -593,7 +598,7 @@ export class Storage {
 
       const responseStream = new PassThrough()
       const mergerStream = new PassThrough()
-      const merge = await this.startMerge(storageLocation, () =>
+      const merge = await this.startMerge(storageLocation, 'stream', () =>
         this.adapter
           .uploadStream(`${storageLocation.folderName}/merged`, mergerStream)
           .catch((err) => {
@@ -901,15 +906,37 @@ export class S3Adapter implements StorageAdapter {
       maxSockets: env.STORAGE_S3_MAX_SOCKETS,
       keepAliveMsecs: 1000,
     }
+    const httpAgent = new HttpAgent(agentOptions)
+    const httpsAgent = new HttpsAgent(agentOptions)
+    instrumentS3Agent(httpAgent)
+    instrumentS3Agent(httpsAgent)
     const s3 = new S3Client({
       forcePathStyle: true,
       region: env.AWS_REGION,
       requestHandler: new NodeHttpHandler({
-        httpAgent: new HttpAgent(agentOptions),
-        httpsAgent: new HttpsAgent(agentOptions),
+        httpAgent,
+        httpsAgent,
         socketTimeout: env.STORAGE_S3_SOCKET_TIMEOUT_MS,
       }),
     })
+    // `initialize` wraps the whole command (retries, socket wait, signing), so the
+    // duration is what callers wait for; a GetObject settles at response headers.
+    s3.middlewareStack.add(
+      (next, context) => async (args) => {
+        const startedAt = performance.now()
+        try {
+          const result = await next(args)
+          const { $metadata } = result.output as { $metadata?: { attempts?: number } }
+          observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts)
+          return result
+        } catch (err) {
+          const { $metadata } = err as { $metadata?: { attempts?: number } }
+          observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts, err)
+          throw err
+        }
+      },
+      { step: 'initialize', name: 'cacheServerMetrics' },
+    )
 
     try {
       await s3.send(
