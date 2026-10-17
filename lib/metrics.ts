@@ -73,6 +73,12 @@ export const cacheMergesTotal = new Counter({
   registers: [metricsRegistry],
 })
 
+export const cacheMergesSkippedTotal = new Counter({
+  name: 'cache_merges_skipped_total',
+  help: 'Merges not started because this process already runs MAX_CONCURRENT_MERGES; a later download retries them.',
+  registers: [metricsRegistry],
+})
+
 export const cacheMergeDurationSeconds = new Histogram({
   name: 'cache_merge_duration_seconds',
   help: 'Wall time of finished Merges by kind and result.',

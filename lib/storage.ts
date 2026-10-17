@@ -36,7 +36,7 @@ import { getDatabase, retryOnLockConflict } from './db'
 import { env } from './env'
 import { generateNumberId } from './helpers'
 import { logger } from './logger'
-import { instrumentS3Agent, observeS3Request, trackMerge } from './metrics'
+import { cacheMergesSkippedTotal, instrumentS3Agent, observeS3Request, trackMerge } from './metrics'
 import {
   acquireMergeLease,
   createReaderLease,
@@ -103,6 +103,7 @@ export class Storage {
 
   private db
   private mergeStreamPromises = new Set<Promise<void>>()
+  private activeMerges = 0
   adapter
 
   private constructor({ db, adapter }: { adapter: StorageAdapter; db: Kysely<Database> }) {
@@ -261,19 +262,38 @@ export class Storage {
   /**
    * Runs a Merge under a Merge Lease. `write` produces `${folderName}/merged`;
    * a lease-fenced transaction then marks the Merge complete. Returns false
-   * when another worker holds the lease. Writing straight to the final object
-   * is safe (ADR-0004). The returned promise never rejects: failures are logged
-   * and the merge state rolled back.
+   * when another worker holds the lease or this process already runs
+   * MAX_CONCURRENT_MERGES Merges; a skipped Merge is retried by a later
+   * download. Writing straight to the final object is safe (ADR-0004). The
+   * returned promise never rejects: failures are logged and the merge state
+   * rolled back.
    */
   private async startMerge(location: StorageLocation, kind: MergeKind, write: () => Promise<void>) {
-    const mergeToken = await acquireMergeLease(this.db, location.id)
-    if (!mergeToken) return false
-
-    await this.db
-      .updateTable('storage_locations')
-      .set({ mergeStartedAt: Date.now() })
-      .where('id', '=', location.id)
-      .execute()
+    // Each Merge holds storage connections and buffers for its whole duration;
+    // unbounded, a burst of first restores or finalizes exhausts them.
+    if (this.activeMerges >= env.MAX_CONCURRENT_MERGES) {
+      cacheMergesSkippedTotal.inc()
+      return false
+    }
+    // Reserve the slot before the first await so concurrent callers cannot overshoot it.
+    this.activeMerges++
+    let mergeToken: string | undefined
+    try {
+      mergeToken = await acquireMergeLease(this.db, location.id)
+      if (mergeToken)
+        await this.db
+          .updateTable('storage_locations')
+          .set({ mergeStartedAt: Date.now() })
+          .where('id', '=', location.id)
+          .execute()
+    } catch (err) {
+      this.activeMerges--
+      throw err
+    }
+    if (!mergeToken) {
+      this.activeMerges--
+      return false
+    }
 
     const renewalTimer = setInterval(() => {
       void renewMergeLease(this.db, location.id, mergeToken)
@@ -324,6 +344,7 @@ export class Storage {
       })
       .finally(async () => {
         clearInterval(renewalTimer)
+        this.activeMerges--
         await releaseMergeLease(this.db, location.id, mergeToken)
       })
     this.mergeStreamPromises.add(mergePromise)
