@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
+import { env } from '~/lib/env'
 import { logger } from '~/lib/logger'
 import { cacheDownloadsTotal } from '~/lib/metrics'
 import { getStorage } from '~/lib/storage'
@@ -36,6 +37,7 @@ export default defineEventHandler(async (event) => {
   res.once('close', onClose)
 
   let stream: Readable | undefined
+  let idleTimer: NodeJS.Timeout | undefined
   try {
     const storage = await getStorage()
     stream = await storage.download(cacheEntryId, { signal: abort.signal })
@@ -57,6 +59,22 @@ export default defineEventHandler(async (event) => {
       logger.debug(`Client aborted /download/${cacheEntryId} before storage answered`)
       return
     }
+    // The HTTP server has no idle timeout, so a client that stops reading but
+    // keeps the connection open would hold the backend read, its Storage Reader
+    // Lease and, on a first restore, the Merge forever. Bytes moving at any rate
+    // keep the download alive.
+    if (env.DOWNLOAD_IDLE_TIMEOUT_MS > 0) {
+      const body = stream
+      idleTimer = setTimeout(() => {
+        body.destroy(
+          Object.assign(new Error(`No bytes sent for ${env.DOWNLOAD_IDLE_TIMEOUT_MS} ms`), {
+            code: 'ERR_DOWNLOAD_IDLE_TIMEOUT',
+          }),
+        )
+      }, env.DOWNLOAD_IDLE_TIMEOUT_MS)
+      idleTimer.unref()
+      body.on('data', () => idleTimer?.refresh())
+    }
     await pipeline(stream, res)
     cacheDownloadsTotal.inc({ result: 'completed' })
   } catch (err) {
@@ -64,6 +82,11 @@ export default defineEventHandler(async (event) => {
     // unread body pins its storage connection and the reader lease it carries.
     stream?.destroy()
     const { code, name } = err as NodeJS.ErrnoException
+    if (code === 'ERR_DOWNLOAD_IDLE_TIMEOUT') {
+      cacheDownloadsTotal.inc({ result: 'idle_timeout' })
+      logger.warn(`Download /download/${cacheEntryId} closed: ${(err as Error).message}`)
+      return
+    }
     if (abort.signal.aborted || name === 'AbortError' || CLIENT_GONE_ERROR_CODES[code ?? '']) {
       cacheDownloadsTotal.inc({ result: 'client_gone' })
       // Expected on long downloads (cancelled jobs, parallel runners) and there
@@ -83,6 +106,7 @@ export default defineEventHandler(async (event) => {
     }
     throw err
   } finally {
+    clearTimeout(idleTimer)
     res.off('close', onClose)
   }
 })

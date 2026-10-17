@@ -57,11 +57,11 @@ export const cacheLookupDurationSeconds = new Histogram({
 
 export const cacheDownloadsTotal = new Counter({
   name: 'cache_downloads_total',
-  help: 'Proxied /download requests by outcome. client_gone: the client hung up before the body finished.',
+  help: 'Proxied /download requests by outcome. client_gone: the client hung up before the body finished; idle_timeout: no bytes moved for DOWNLOAD_IDLE_TIMEOUT_MS.',
   labelNames: ['result'],
   registers: [metricsRegistry],
 })
-for (const result of ['completed', 'client_gone', 'not_found', 'error'])
+for (const result of ['completed', 'client_gone', 'idle_timeout', 'not_found', 'error'])
   cacheDownloadsTotal.inc({ result }, 0)
 
 export type MergeKind = 'stream' | 'compose'

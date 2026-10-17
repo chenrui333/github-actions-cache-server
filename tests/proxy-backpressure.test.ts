@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import * as h3 from 'h3'
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
+import { env } from '~/lib/env'
 import { getStorage } from '~/lib/storage'
 
 const MiB = 1024 * 1024
@@ -95,6 +96,44 @@ describe('proxy routes apply backpressure', () => {
       .toBeLessThan(MAX_BUFFERED_BYTES)
     expect.soft(queued, 'bytes queued in the response').toBeLessThan(MAX_BUFFERED_BYTES)
   }, 60_000)
+
+  test('download releases the storage read of a client that stopped reading', async () => {
+    // Real timers and sockets on purpose: the stall comes from TCP flow control,
+    // which fake timers cannot drive.
+    const originalIdleTimeout = env.DOWNLOAD_IDLE_TIMEOUT_MS
+    env.DOWNLOAD_IDLE_TIMEOUT_MS = 500
+    try {
+      let pulled = 0
+      function* entry() {
+        while (pulled < ENTRY_BYTES) {
+          pulled += CHUNK_BYTES
+          yield Buffer.alloc(CHUNK_BYTES)
+        }
+      }
+      const source = Readable.from(entry(), { objectMode: false, highWaterMark: CHUNK_BYTES })
+      const storage = await getStorage()
+      vi.spyOn(storage, 'download').mockResolvedValue(source)
+
+      const { port } = server.address() as AddressInfo
+      const serverSide = once(server, 'request') as Promise<[IncomingMessage, ServerResponse]>
+      const req = http.get(`http://localhost:${port}/download/${randomUUID()}`)
+      const [res] = (await once(req, 'response')) as [IncomingMessage]
+      expect(res.statusCode).toBe(200)
+      res.once('data', () => res.pause()) // stops reading, keeps the connection open
+      const [, serverRes] = await serverSide
+      const serverClosed = once(serverRes, 'close')
+
+      // Without an idle timeout neither ever happens: the pipe just stays parked.
+      await expect(once(source, 'close')).rejects.toMatchObject({
+        code: 'ERR_DOWNLOAD_IDLE_TIMEOUT',
+      })
+      await serverClosed
+      expect(pulled).toBeLessThan(ENTRY_BYTES)
+      req.destroy()
+    } finally {
+      env.DOWNLOAD_IDLE_TIMEOUT_MS = originalIdleTimeout
+    }
+  }, 20_000)
 
   test('upload does not buffer a block body that storage is not reading yet', async () => {
     const storage = await getStorage()
