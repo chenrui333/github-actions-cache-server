@@ -1,0 +1,24 @@
+docs/adr/0007-per-process-metrics-no-cross-worker-aggregation.md
+  h_9df9c32c3f321d 3-4
+docs/adr/0011-metrics-are-aggregated-across-cluster-workers.md
+  h_9df9c32c3f321d 1-11
+lib/cluster-metrics.ts
+  h_9df9c32c3f321d 1-72
+lib/metrics.ts
+  h_9df9c32c3f321d 2,6,9-12,17-18,42,99,108,110,139,215
+plugins/setup.ts
+  h_9df9c32c3f321d 5,28
+routes/metrics.ts
+  h_9df9c32c3f321d 1-2,6,8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aab40395a250800fca5f1409e740174b0b94934d",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
