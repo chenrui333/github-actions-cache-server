@@ -1,16 +1,20 @@
 import type { Agent, ClientRequest } from 'node:http'
+import cluster from 'node:cluster'
 import { performance } from 'node:perf_hooks'
 import { sql } from 'kysely'
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client'
+import { joinClusterMetrics } from './cluster-metrics'
 import { getDatabase } from './db'
 
-// Per-process registry. Correct for the shipped single-worker-per-container
-// topology (Dockerfile: NITRO_CLUSTER_WORKERS=1) — scale with replicas and
-// aggregate in PromQL. NITRO_CLUSTER_WORKERS>1 makes these counters per-worker
-// because workers share the port round-robin. See ADR-0007.
+// Per-process registry. With NITRO_CLUSTER_WORKERS>1, /metrics serves the sum of
+// every worker's registry, aggregated by the cluster primary (ADR-0011): metrics
+// default to `sum`; gauges computed from the shared database use `max` so N
+// workers do not report N times the same rows.
 export const metricsRegistry = new Registry()
 
 collectDefaultMetrics({ register: metricsRegistry })
+
+if (cluster.isWorker) joinClusterMetrics(metricsRegistry)
 
 export const cacheRequestsTotal = new Counter({
   name: 'cache_requests_total',
@@ -35,6 +39,7 @@ export const cacheStorageBytes = new Gauge({
   name: 'cache_storage_bytes',
   help: 'Total bytes of finalized cache payloads tracked across storage locations.',
   registers: [metricsRegistry],
+  aggregator: 'max',
   async collect() {
     const db = await getDatabase()
     const { bytes } = await db
@@ -91,7 +96,7 @@ const mergeStartTimes = new Set<{ startedAt: number }>()
 
 export const cacheMergesInProgress = new Gauge({
   name: 'cache_merges_in_progress',
-  help: 'Merges this process is running now.',
+  help: 'Merges running now, summed across workers.',
   registers: [metricsRegistry],
   collect() {
     cacheMergesInProgress.set(mergeStartTimes.size)
@@ -100,8 +105,9 @@ export const cacheMergesInProgress = new Gauge({
 
 export const cacheMergeOldestAgeSeconds = new Gauge({
   name: 'cache_merge_oldest_age_seconds',
-  help: 'Age of the longest-running in-progress Merge in this process; 0 when none is running.',
+  help: 'Age of the longest-running in-progress Merge in any worker; 0 when none is running.',
   registers: [metricsRegistry],
+  aggregator: 'max',
   collect() {
     let oldest = Infinity
     for (const { startedAt } of mergeStartTimes) oldest = Math.min(oldest, startedAt)
@@ -130,6 +136,7 @@ export const cacheLeases = new Gauge({
   help: 'Merge and Storage Reader Lease rows by state (active: not yet expired).',
   labelNames: ['type', 'state'],
   registers: [metricsRegistry],
+  aggregator: 'max',
   async collect() {
     const db = await getDatabase()
     const now = Date.now()
@@ -205,7 +212,7 @@ export const s3HttpQueuedRequests = new Gauge({
 
 export const s3HttpMaxSockets = new Gauge({
   name: 's3_http_max_sockets',
-  help: 'Configured S3 agent socket limit by pool (STORAGE_S3_MAX_SOCKETS, STORAGE_S3_CONTROL_MAX_SOCKETS).',
+  help: 'Configured S3 agent socket limit by pool (STORAGE_S3_MAX_SOCKETS, STORAGE_S3_CONTROL_MAX_SOCKETS), summed across workers: each worker has its own pools.',
   labelNames: ['pool'],
   registers: [metricsRegistry],
 })
