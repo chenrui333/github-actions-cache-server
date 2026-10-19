@@ -1,0 +1,16 @@
+lib/storage.ts
+  h_9df9c32c3f321d 56-63,65,91
+tests/cache-entry-matching.test.ts
+  h_9df9c32c3f321d 132-137,141-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3ef05c2da77f1128bbf6af6280d78a6344910d5a",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
