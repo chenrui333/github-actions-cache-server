@@ -53,11 +53,16 @@ import { deleteStorageLocationIfUnread, noActiveReaderLease } from './storage-li
 // Entries for the same prefix — caps a pathological scan (ADR-0005).
 const MAX_DANGLING_PURGE_ATTEMPTS = 10
 
+/**
+ * `!` escapes LIKE metacharacters instead of `\`: the ESCAPE clause is a SQL
+ * literal (below), and `'!'` reads the same in every dialect, while a
+ * backslash literal depends on server settings (MySQL `NO_BACKSLASH_ESCAPES`,
+ * Postgres `standard_conforming_strings`).
+ */
+const LIKE_ESCAPE = '!'
+
 function escapeLikePattern(value: string) {
-  return value
-    .replaceAll('\\', '\\\\')
-    .replaceAll('%', String.raw`\%`)
-    .replaceAll('_', String.raw`\_`)
+  return value.replaceAll(/[!%_]/g, (char) => `${LIKE_ESCAPE}${char}`)
 }
 
 /**
@@ -83,7 +88,7 @@ export function cacheEntryCandidateQuery(
     .where(
       match === 'exact'
         ? sql<boolean>`${sql.ref('key')} = ${key}`
-        : sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(key)}%`} escape ${sql.lit('\\')}`,
+        : sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(key)}%`} escape ${sql.lit(LIKE_ESCAPE)}`,
     )
     .where('version', '=', version)
     .where('scope', '=', scope)

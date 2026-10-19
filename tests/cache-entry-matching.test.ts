@@ -129,10 +129,19 @@ describe('cache entry matching', () => {
       { key: 'abc-1', updatedAt: 4 },
       { key: String.raw`a\d-1`, updatedAt: 5 },
       { key: 'aed-1', updatedAt: 6 },
+      // The escape character itself, and a backslash before a metacharacter.
+      { key: 'a!e-1', updatedAt: 7 },
+      { key: 'a!%g-1', updatedAt: 8 },
+      { key: 'a!xg-1', updatedAt: 9 },
+      { key: String.raw`a\%h-1`, updatedAt: 10 },
+      { key: String.raw`a\xh-1`, updatedAt: 11 },
     ])
     expect(await match(repoId, ['a%'])).toMatchObject({ key: 'a%b-1' })
     expect(await match(repoId, ['a_'])).toMatchObject({ key: 'a_c-1' })
-    expect(await match(repoId, ['a\\'])).toMatchObject({ key: String.raw`a\d-1` })
+    expect(await match(repoId, [String.raw`a\d`])).toMatchObject({ key: String.raw`a\d-1` })
+    expect(await match(repoId, ['a!e'])).toMatchObject({ key: 'a!e-1' })
+    expect(await match(repoId, ['a!%'])).toMatchObject({ key: 'a!%g-1' })
+    expect(await match(repoId, [String.raw`a\%`])).toMatchObject({ key: String.raw`a\%h-1` })
   })
 
   test('prefix matching keeps the driver LIKE case rules', async () => {
