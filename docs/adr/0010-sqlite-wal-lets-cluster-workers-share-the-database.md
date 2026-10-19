@@ -1,0 +1,24 @@
+# SQLite runs in WAL mode so cluster workers can share the database
+
+With `NITRO_CLUSTER_WORKERS` above 1, every worker opens the same SQLite file, and so does the cluster primary at startup. In SQLite's default rollback-journal mode, a writer blocks readers, readers block the writer's commit, and two deferred transactions that both read and then write deadlock. SQLite then fails one of them with `SQLITE_BUSY` at once, because waiting could never resolve it. So `busy_timeout` cannot absorb those errors, and they reached clients as failed requests.
+
+Each connection now opens with:
+
+- `journal_mode=WAL`. Readers never block the writer and the writer never blocks readers. Only writers queue, one at a time.
+- `synchronous=NORMAL`, the recommended setting for WAL and already what better-sqlite3's SQLite build uses in WAL mode; it is set explicitly to make the tradeoff a stated choice. Commits append to the WAL without `fsync`; the WAL is synced at checkpoints. The database stays consistent in every crash. A crashed or OOM-killed process loses nothing, because its writes are already in the OS page cache. A power loss or kernel crash can roll back the commits since the last checkpoint: at most `wal_autocheckpoint` (1000 pages, about 4 MiB) of WAL frames. For a cache that is acceptable. A rolled-back Cache Entry is a cache miss, rolled-back lease rows expire anyway, and storage written for a rolled-back row becomes Orphaned Storage that the orphaned-storage sweep reclaims (ADR-0001).
+- `busy_timeout=5000`. A statement waits up to 5 s for another process's write lock. better-sqlite3 waits synchronously, so this also bounds how long a worker's event loop can stall. Real waits are far shorter, because a write transaction never awaits I/O while it holds the lock. The management API's storage-location delete used to hold a transaction open across the storage delete; it now deletes the row first, like the cleanup tasks.
+- `journal_size_limit` of 64 MiB. SQLite checkpoints automatically when the WAL passes 1000 pages and rewinds it once no reader still needs it. This setting truncates the file back after a burst instead of keeping its high-water size on disk. No periodic `wal_checkpoint(TRUNCATE)` is needed, because reads are short statements and never hold a snapshot open long enough to starve the checkpoint.
+
+Kysely starts SQLite transactions as `BEGIN` (deferred). The SQLite dialect now issues `BEGIN IMMEDIATE`, so a transaction takes the write lock before its first read, queues on `busy_timeout` instead of failing, and reads the latest commit. That makes the read-check-write transactions (the lease-fenced Merge completion, `deleteStorageLocationIfUnread`, reader-lease creation) serializable across processes, the SQLite counterpart of the `forUpdate()` the other drivers use. `retryOnLockConflict` also treats `SQLITE_BUSY` as retryable, for the transactions it already wraps.
+
+Kysely runs SQLite migrations without a transaction, and its SQLite migration lock is a no-op. So the database now migrates inside one `BEGIN IMMEDIATE` transaction. Whichever process takes the write lock first, usually the primary, applies the migrations atomically; the others wait for the lock, then find nothing to apply. The primary also initializes storage, so bad configuration still fails the container fast, and then closes its connection, since it serves no requests. Workers close theirs on graceful shutdown, after in-flight Merges finish.
+
+Nitro starts the scheduled cleanup tasks in every worker, so with N workers each task runs N times per schedule. That is safe. Tasks that delete rows a reader might still use claim them with conditional writes (`deleteStorageLocationIfUnread`, `claimPartsDeletionIfUnread`), so only one run acts on a row. The rest repeat idempotent deletes. The duplicates only cost repeated queries and storage listings.
+
+## Upgrading and rolling back
+
+WAL mode is a property of the database file. The first start of this version converts it in place, and every later open keeps it, including older versions of this server. An older version opens a WAL database normally, replays a WAL left by a killed process, and keeps the file in WAL mode. It still starts deferred transactions and does not serialize migrations, so it should still run a single worker. The `-wal` and `-shm` files next to the database belong to it. Keep them with the database file when copying or backing it up, or checkpoint first.
+
+To return a database to rollback-journal mode, stop every server process and run `PRAGMA journal_mode=DELETE` against the file with a single connection. This checkpoints the WAL and removes it. Starting this version, or a later one, switches the file back to WAL.
+
+WAL needs shared memory between the processes that use the file, so the database must sit on a local filesystem. Network filesystems such as NFS are not supported, and that was already true of SQLite here.
