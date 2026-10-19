@@ -1,0 +1,36 @@
+README.md
+  h_9df9c32c3f321d 45-46
+docs/adr/0010-sqlite-wal-lets-cluster-workers-share-the-database.md
+  h_9df9c32c3f321d 1-7,8,9-19,20,21-24
+lib/api/storage-locations.ts
+  h_9df9c32c3f321d 51-56
+lib/db.ts
+  h_9df9c32c3f321d 1,4,8-16,103-108,111,118-119,132-228,279-282,317-326
+plugins/setup.ts
+  h_9df9c32c3f321d 5,13-15,28,30,39-43,46-47
+tests/sqlite-contender.ts
+  h_9df9c32c3f321d 1-172
+tests/sqlite-multiprocess.test.ts
+  h_9df9c32c3f321d 1-93
+docs/adr/0007-per-process-metrics-no-cross-worker-aggregation.md
+  h_9df9c32c3f321d 3-4
+docs/adr/0011-metrics-are-aggregated-across-cluster-workers.md
+  h_9df9c32c3f321d 1-11
+lib/cluster-metrics.ts
+  h_9df9c32c3f321d 1-72
+lib/metrics.ts
+  h_9df9c32c3f321d 2,6,9-12,17-18,42,99,108,110,139,215
+routes/metrics.ts
+  h_9df9c32c3f321d 1-2,6,8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "486de79cacb29b14f8fc6579a69e7eeed3e1d5c3",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
