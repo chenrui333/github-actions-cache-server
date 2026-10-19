@@ -1,0 +1,398 @@
+import type { ResultPromise } from 'execa'
+import type { KeyObject } from 'node:crypto'
+import type { Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+
+import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
+import { createServer } from 'node:http'
+
+import { execa } from 'execa'
+import { exportJWK, SignJWT } from 'jose'
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
+import { assertDirectDownloadsRequireTokenValidation } from '~/lib/schemas'
+
+// A second server with token validation on, verifying against a local issuer
+// whose keys are generated here, so these tests never reach GitHub.
+const PORT = 3011
+const BASE_URL = `http://localhost:${PORT}`
+const TWIRP = `${BASE_URL}/twirp/github.actions.results.api.v1.CacheService`
+const URL_TTL_SECONDS = 120
+const KID = 'test-key'
+const AUDIENCE = 'test-audience'
+
+const trusted = generateKeyPairSync('rsa', { modulusLength: 2048 })
+const untrusted = generateKeyPairSync('rsa', { modulusLength: 2048 })
+
+const repoA = `repo-a-${randomUUID()}`
+const repoB = `repo-b-${randomUUID()}`
+const scopeMarker = `refs/heads/marker-${randomUUID()}`
+// Only ever inside a token, so finding it in the logs means decoded claims were logged.
+const claimMarker = `claim-marker-${randomUUID()}`
+
+// holder object instead of bare `let`s (`unicorn/no-top-level-assignment-in-function`)
+const issuer: { url: string; server?: Server } = { url: '' }
+
+async function startIssuer() {
+  const jwk = { ...(await exportJWK(trusted.publicKey)), kid: KID, alg: 'RS256', use: 'sig' }
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json')
+    if (req.url === '/.well-known/openid-configuration')
+      return res.end(
+        JSON.stringify({ issuer: issuer.url, jwks_uri: `${issuer.url}/.well-known/jwks` }),
+      )
+    if (req.url === '/.well-known/jwks') return res.end(JSON.stringify({ keys: [jwk] }))
+    res.statusCode = 404
+    res.end('{}')
+  })
+  const listening = Promise.withResolvers<void>()
+  server.listen(0, '127.0.0.1', listening.resolve)
+  await listening.promise
+  issuer.server = server
+  issuer.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+}
+
+function encodeSegment(value: object) {
+  return Buffer.from(JSON.stringify(value)).toString('base64url')
+}
+
+// Same database and storage as the main test server, so whatever this server
+// stores stays authorized for the other suites' orphaned-storage checks.
+function serverEnv(overrides: Record<string, string>) {
+  return {
+    ...process.env,
+    NITRO_PORT: String(PORT),
+    API_BASE_URL: BASE_URL,
+    DISABLE_CLEANUP_JOBS: 'true',
+    ...overrides,
+  }
+}
+
+type ServerProcess = ResultPromise<{ node: true; ipc: true; all: true; reject: false }>
+
+function startServer(overrides: Record<string, string>): ServerProcess {
+  return execa({
+    node: true,
+    ipc: true,
+    all: true,
+    reject: false,
+    env: serverEnv(overrides),
+  })`.output/server/index.mjs`
+}
+
+/** Resolves `ready` once the server signals readiness, or `exited` if it dies first. */
+async function readyOrExited(server: ServerProcess) {
+  return Promise.race([
+    server
+      .getOneMessage({ filter: (message) => message === 'nitro:ready' })
+      .then(() => 'ready' as const)
+      .catch(() => 'exited' as const),
+    server.then(() => 'exited' as const),
+  ])
+}
+
+type Claims = Record<string, unknown>
+
+async function mint(
+  claims: Claims,
+  {
+    key = trusted.privateKey,
+    iss = issuer.url,
+    aud = AUDIENCE,
+    exp = '10m',
+    nbf,
+  }: {
+    key?: KeyObject
+    iss?: string
+    aud?: string | null
+    exp?: string | number | null
+    nbf?: string | number
+  } = {},
+) {
+  const jwt = new SignJWT({ ...claims, run_id: claimMarker })
+    .setProtectedHeader({ alg: 'RS256', kid: KID })
+    .setIssuedAt()
+  if (iss) jwt.setIssuer(iss)
+  if (aud !== null) jwt.setAudience(aud)
+  if (exp !== null) jwt.setExpirationTime(exp)
+  if (nbf !== undefined) jwt.setNotBefore(nbf)
+  return jwt.sign(key)
+}
+
+function claimsFor(repoId: string, scopes = [{ Scope: scopeMarker, Permission: 3 }]): Claims {
+  return { ac: JSON.stringify(scopes), repository_id: repoId }
+}
+
+async function twirp(method: string, token: string | undefined, body: object) {
+  const res = await fetch(`${TWIRP}/${method}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(token && { authorization: `Bearer ${token}` }),
+    },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text()
+  let json: Record<string, unknown> = {}
+  try {
+    json = JSON.parse(text)
+  } catch {}
+  return { status: res.status, json }
+}
+
+async function save(token: string, key: string, data: Buffer) {
+  const created = await twirp('CreateCacheEntry', token, { key, version: 'v1' })
+  expect(created.status).toBe(200)
+  const uploadUrl = created.json.signed_upload_url as string
+  const part = await fetch(uploadUrl, { method: 'PUT', body: new Uint8Array(data) })
+  expect(part.status).toBe(201)
+  const blocklist = await fetch(`${uploadUrl}?comp=blocklist`, { method: 'PUT' })
+  expect(blocklist.status).toBe(201)
+  const finalized = await twirp('FinalizeCacheEntryUpload', token, {
+    key,
+    version: 'v1',
+    size_bytes: data.length,
+  })
+  expect(finalized.status).toBe(200)
+}
+
+function lookup(token: string | undefined, key: string) {
+  return twirp('GetCacheEntryDownloadURL', token, { key, version: 'v1' })
+}
+
+describe('direct downloads require token validation (config)', () => {
+  const base = {
+    ENABLE_DIRECT_DOWNLOADS: true,
+    SKIP_TOKEN_VALIDATION: true,
+    UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION: false,
+  }
+
+  test('refuses direct downloads with token validation skipped', () => {
+    expect(() => assertDirectDownloadsRequireTokenValidation(base)).toThrow(
+      'requires token validation',
+    )
+  })
+
+  test('allows the combination only with the explicit unsafe override', () => {
+    expect(() =>
+      assertDirectDownloadsRequireTokenValidation({
+        ...base,
+        UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION: true,
+      }),
+    ).not.toThrow()
+    expect(() =>
+      assertDirectDownloadsRequireTokenValidation({ ...base, SKIP_TOKEN_VALIDATION: false }),
+    ).not.toThrow()
+  })
+
+  test('the server refuses to start', { timeout: 30_000 }, async () => {
+    const server = startServer({ ENABLE_DIRECT_DOWNLOADS: 'true', SKIP_TOKEN_VALIDATION: 'true' })
+    if ((await readyOrExited(server)) === 'ready') {
+      server.kill()
+      throw new Error('server started with direct downloads and skipped token validation')
+    }
+    const result = await server
+    expect(result.exitCode).not.toBe(0)
+    expect(result.all).toContain('ENABLE_DIRECT_DOWNLOADS=true requires token validation')
+  })
+})
+
+describe('token validation and direct downloads', () => {
+  let server: ServerProcess
+  let logs = ''
+  const issuedTokens: string[] = []
+  const track = async (token: Promise<string>) => {
+    const value = await token
+    issuedTokens.push(value)
+    return value
+  }
+
+  beforeAll(async () => {
+    await startIssuer()
+    server = startServer({
+      SKIP_TOKEN_VALIDATION: 'false',
+      ACTIONS_TOKEN_ISSUER: issuer.url,
+      ACTIONS_TOKEN_AUDIENCE: `other-audience, ${AUDIENCE}`,
+      ENABLE_DIRECT_DOWNLOADS: 'true',
+      EAGER_MERGE: 'true',
+      DIRECT_DOWNLOAD_URL_TTL_SECONDS: String(URL_TTL_SECONDS),
+    })
+    server.all?.on('data', (chunk: Buffer) => {
+      logs += chunk.toString()
+    })
+    if ((await readyOrExited(server)) !== 'ready')
+      throw new Error(`server failed to start:\n${logs}`)
+  }, 60_000)
+
+  afterAll(async () => {
+    server?.kill()
+    await server
+    const closed = Promise.withResolvers<void>()
+    issuer.server?.close(() => closed.resolve())
+    await closed.promise
+  })
+
+  test('accepts a token signed by the issuer', async () => {
+    const token = await track(mint(claimsFor(repoA)))
+    const res = await lookup(token, randomUUID())
+    expect(res.status).toBe(200)
+    expect(res.json.ok).toBe(false)
+  })
+
+  test.each([
+    ['missing bearer', async () => undefined],
+    [
+      'signature from an untrusted key',
+      () => mint(claimsFor(repoA), { key: untrusted.privateKey }),
+    ],
+    ['expired', () => mint(claimsFor(repoA), { exp: Math.floor(Date.now() / 1000) - 60 })],
+    ['not yet valid', () => mint(claimsFor(repoA), { nbf: Math.floor(Date.now() / 1000) + 600 })],
+    ['wrong issuer', () => mint(claimsFor(repoA), { iss: 'https://issuer.invalid' })],
+    ['no expiry', () => mint(claimsFor(repoA), { exp: null })],
+    ['wrong audience', () => mint(claimsFor(repoA), { aud: 'someone-else' })],
+    ['no audience', () => mint(claimsFor(repoA), { aud: null })],
+    ['no cache scopes', () => mint({ repository_id: repoA })],
+    [
+      'no repository id',
+      () => mint({ ac: JSON.stringify([{ Scope: scopeMarker, Permission: 3 }]) }),
+    ],
+    ['malformed cache scopes', () => mint({ ac: '[{"Scope":1}]', repository_id: repoA })],
+    [
+      'unsigned token',
+      async () => {
+        const claims = {
+          ...claimsFor(repoA),
+          iss: issuer.url,
+          exp: Math.floor(Date.now() / 1000) + 600,
+        }
+        return `${encodeSegment({ alg: 'none' })}.${encodeSegment(claims)}.`
+      },
+    ],
+  ])('rejects %s with 401 and no download URL', async (_, makeToken) => {
+    const token = await makeToken()
+    if (token) issuedTokens.push(token)
+    const res = await lookup(token, randomUUID())
+    expect(res.status).toBe(401)
+    expect(res.json.signed_download_url).toBeUndefined()
+  })
+
+  test(
+    'a forged token gets no URL for an existing entry, direct or proxied',
+    { timeout: 30_000 },
+    async () => {
+      const key = `forged-${randomUUID()}`
+      const owner = await track(mint(claimsFor(repoA)))
+      await save(owner, key, randomBytes(1024))
+
+      const forged = await mint(claimsFor(repoA), { key: untrusted.privateKey })
+      issuedTokens.push(forged)
+      const res = await lookup(forged, key)
+      expect(res.status).toBe(401)
+      expect(JSON.stringify(res.json)).not.toContain('/download/')
+      expect(JSON.stringify(res.json)).not.toContain('X-Amz-')
+    },
+  )
+
+  test(
+    'another repository cannot match the entry, even by prefix',
+    { timeout: 30_000 },
+    async () => {
+      const key = `cross-repo-${randomUUID()}`
+      await save(await track(mint(claimsFor(repoA))), key, randomBytes(1024))
+
+      const other = await track(mint(claimsFor(repoB)))
+      const exact = await lookup(other, key)
+      expect(exact.json.ok).toBe(false)
+      const prefix = await twirp('GetCacheEntryDownloadURL', other, {
+        key: 'no-such-key',
+        restore_keys: [key.slice(0, 12)],
+        version: 'v1',
+      })
+      expect(prefix.json.ok).toBe(false)
+
+      const owner = await lookup(await track(mint(claimsFor(repoA))), key)
+      expect(owner.json.ok).toBe(true)
+    },
+  )
+
+  test('scope permissions are bit flags', { timeout: 30_000 }, async () => {
+    const key = `scopes-${randomUUID()}`
+    await save(await track(mint(claimsFor(repoA))), key, randomBytes(1024))
+
+    const readOnly = await track(mint(claimsFor(repoA, [{ Scope: scopeMarker, Permission: 1 }])))
+    const read = await lookup(readOnly, key)
+    expect(read.json.ok).toBe(true)
+    const write = await twirp('CreateCacheEntry', readOnly, { key: randomUUID(), version: 'v1' })
+    expect(write.status).toBe(403)
+
+    const writeOnly = await track(mint(claimsFor(repoA, [{ Scope: scopeMarker, Permission: 2 }])))
+    const writeOnlyRead = await lookup(writeOnly, key)
+    expect(writeOnlyRead.status).toBe(403)
+
+    const otherScope = await track(
+      mint(claimsFor(repoA, [{ Scope: `refs/heads/other-${randomUUID()}`, Permission: 3 }])),
+    )
+    const otherScopeRead = await lookup(otherScope, key)
+    expect(otherScopeRead.json.ok).toBe(false)
+  })
+
+  test(
+    'an authorized lookup of a merged entry gets a URL that expires within the TTL',
+    { timeout: 60_000 },
+    async () => {
+      const key = `direct-${randomUUID()}`
+      const data = randomBytes(64 * 1024)
+      const token = await track(mint(claimsFor(repoA)))
+      await save(token, key, data)
+
+      const signedUrl = async () => {
+        const res = await lookup(token, key)
+        expect(res.json.ok).toBe(true)
+        return new URL(res.json.signed_download_url as string)
+      }
+
+      if (process.env.STORAGE_DRIVER === 'filesystem') {
+        // No signed URLs on the filesystem driver: always the proxied route.
+        const url = await signedUrl()
+        expect(url.origin).toBe(BASE_URL)
+        expect(url.pathname).toMatch(/^\/download\//)
+        return
+      }
+
+      // Eager Merge runs after finalize; until it lands the lookup is proxied.
+      const url = await vi.waitFor(
+        async () => {
+          const candidate = await signedUrl()
+          expect(candidate.origin).not.toBe(BASE_URL)
+          return candidate
+        },
+        { timeout: 30_000, interval: 200 },
+      )
+      const expires = Number(
+        url.searchParams.get('X-Amz-Expires') ?? url.searchParams.get('X-Goog-Expires'),
+      )
+      expect(expires).toBeGreaterThan(0)
+      expect(expires).toBeLessThanOrEqual(URL_TTL_SECONDS)
+
+      const download = await fetch(url)
+      const body = Buffer.from(await download.arrayBuffer())
+      expect(body.equals(data)).toBe(true)
+    },
+  )
+
+  test('logs contain neither tokens, claims nor signed URLs', () => {
+    expect(issuedTokens.length).toBeGreaterThan(0)
+    for (const token of issuedTokens) {
+      expect(logs).not.toContain(token)
+      // nor its signature on its own
+      const signature = token.slice(token.lastIndexOf('.') + 1)
+      if (signature) expect(logs).not.toContain(signature)
+    }
+    // Repository ids, scopes and keys do appear in DEBUG query logs; the claims
+    // jose decodes from a rejected token must not.
+    expect(logs).not.toContain(claimMarker)
+    expect(logs).not.toContain('X-Amz-Signature')
+    expect(logs).not.toContain('X-Goog-Signature')
+    // rejections are still diagnosable
+    expect(logs).toContain('ERR_JWT_EXPIRED')
+  })
+})

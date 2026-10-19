@@ -65,6 +65,7 @@ export const envBaseSchema = type({
     "string.url = 'https://results-receiver.actions.githubusercontent.com'",
   'ACTIONS_TOKEN_ISSUER': "string.url = 'https://token.actions.githubusercontent.com'",
   'ACTIONS_TOKEN_JWKS_URL?': 'string.url',
+  'ACTIONS_TOKEN_AUDIENCE?': 'string',
   'CACHE_CLEANUP_OLDER_THAN_DAYS': 'number = 90',
   'CACHE_MAX_SIZE_BYTES?': 'number.integer > 0',
   'CACHE_FILESYSTEM_MAX_USAGE_PERCENT': 'number > 0 & number <= 100 = 90',
@@ -72,6 +73,8 @@ export const envBaseSchema = type({
   'DISABLE_CLEANUP_JOBS?': 'boolean',
   'DEBUG?': 'unknown',
   'ENABLE_DIRECT_DOWNLOADS': 'boolean = false',
+  'DIRECT_DOWNLOAD_URL_TTL_SECONDS': '1 <= number.integer <= 3600 = 300',
+  'UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION': 'boolean = false',
   'EAGER_MERGE': 'boolean = false',
   'MAX_CONCURRENT_MERGES': 'number.integer >= 1 = 16',
   'DOWNLOAD_IDLE_TIMEOUT_MS': 'number.integer >= 0 = 300000',
@@ -82,3 +85,29 @@ export const envBaseSchema = type({
 
 export const envSchema = envBaseSchema.and(envStorageDriverSchema).and(envDbDriverSchema)
 export type Env = typeof envSchema.infer
+
+/**
+ * A direct-download URL is a bearer credential for the stored object. Handing
+ * one out to a caller whose token was never verified lets anyone who can reach
+ * the server read any repository's cache straight from storage, so the two
+ * settings are refused together unless explicitly overridden for local testing.
+ */
+export function assertDirectDownloadsRequireTokenValidation(
+  env: Pick<
+    Env,
+    | 'ENABLE_DIRECT_DOWNLOADS'
+    | 'SKIP_TOKEN_VALIDATION'
+    | 'UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION'
+  >,
+) {
+  if (
+    env.ENABLE_DIRECT_DOWNLOADS &&
+    env.SKIP_TOKEN_VALIDATION &&
+    !env.UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION
+  )
+    throw new Error(
+      'ENABLE_DIRECT_DOWNLOADS=true requires token validation, but SKIP_TOKEN_VALIDATION=true. ' +
+        'Unverified callers would receive signed storage URLs for any cache entry. ' +
+        'Unset SKIP_TOKEN_VALIDATION, or set UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION=true for local testing only.',
+    )
+}

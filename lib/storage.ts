@@ -40,7 +40,7 @@ import { cacheMergesSkippedTotal, instrumentS3Agent, observeS3Request, trackMerg
 import {
   acquireMergeLease,
   createReaderLease,
-  DIRECT_DOWNLOAD_LEASE_DURATION_MS,
+  DIRECT_DOWNLOAD_LEASE_MARGIN_MS,
   LEASE_RENEWAL_MS,
   releaseMergeLease,
   releaseReaderLease,
@@ -807,9 +807,12 @@ export class Storage {
           cacheEntry: cacheEntry.match,
         }
 
-      // Merged entry with direct downloads enabled: take a reader lease bounded
-      // by the signed URL lifetime, then sign.
-      const directDownloadExpiresAt = Date.now() + DIRECT_DOWNLOAD_LEASE_DURATION_MS
+      // Merged entry with direct downloads enabled: take a reader lease that
+      // outlives the signed URL, then sign. Storage authenticates a GET when it
+      // starts, so a download begun just before the URL expires keeps reading
+      // after it; the margin keeps cleanup from deleting the object under it.
+      const urlExpiresAt = Date.now() + env.DIRECT_DOWNLOAD_URL_TTL_SECONDS * 1000
+      const leaseExpiresAt = urlExpiresAt + DIRECT_DOWNLOAD_LEASE_MARGIN_MS
       const leased = await this.db.transaction().execute(async (tx) => {
         let query = tx
           .selectFrom('storage_locations')
@@ -818,7 +821,7 @@ export class Storage {
         if (env.DB_DRIVER !== 'sqlite') query = query.forUpdate()
         const current = await query.executeTakeFirst()
         if (!current?.mergedAt) return current
-        await createReaderLease(tx, current.id, 'storage', directDownloadExpiresAt)
+        await createReaderLease(tx, current.id, 'storage', leaseExpiresAt)
         await tx
           .updateTable('storage_locations')
           .set({ lastDownloadedAt: Date.now() })
@@ -830,10 +833,7 @@ export class Storage {
 
       // The merge could have been undone between validation and the lease read.
       const downloadUrl = leased.mergedAt
-        ? await this.adapter.createDownloadUrl(
-            `${leased.folderName}/merged`,
-            directDownloadExpiresAt,
-          )
+        ? await this.adapter.createDownloadUrl(`${leased.folderName}/merged`, urlExpiresAt)
         : defaultUrl
 
       return {

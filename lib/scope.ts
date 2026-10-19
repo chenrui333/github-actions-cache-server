@@ -1,6 +1,7 @@
 import type { H3Event } from 'h3'
 import * as jose from 'jose'
 import { hasAtLeast } from 'remeda'
+import { z } from 'zod'
 import { env } from './env'
 import { logger } from './logger'
 
@@ -58,26 +59,63 @@ function getBearerToken(event: H3Event) {
   return authHeader.slice(7)
 }
 
+// Unset means no audience check. GitHub-issued runtime tokens carry a
+// deployment-specific `aud`, so pinning it restricts the server to one
+// installation's tokens; a comma-separated list allows several.
+const audience = env.ACTIONS_TOKEN_AUDIENCE?.split(',')
+  .map((value) => value.trim())
+  .filter(Boolean)
+
 async function verifyGitHubActionsToken(token: string) {
   if (env.SKIP_TOKEN_VALIDATION) {
     logger.warn('Token validation is disabled. This should not be used in production!')
     return jose.decodeJwt(token)
   }
 
-  const { payload } = await jose.jwtVerify(token, await getJwks(), { issuer })
+  const { payload } = await jose.jwtVerify(token, await getJwks(), {
+    issuer,
+    audience: audience?.length ? audience : undefined,
+    // jose checks `exp` and `nbf` only when present; a token without `exp`
+    // would otherwise never expire.
+    requiredClaims: ['exp'],
+  })
   return payload
 }
 
+/**
+ * The reason a token was rejected, safe to log and return: never the token or
+ * its claims. jose errors carry the decoded payload, so they must not become
+ * the `cause` of a logged error.
+ */
+function describeTokenError(err: unknown) {
+  if (err instanceof jose.errors.JWTClaimValidationFailed || err instanceof jose.errors.JWTExpired)
+    return `${err.code} (${err.claim})`
+  if (err instanceof jose.errors.JOSEError) return err.code
+  return err instanceof Error ? err.name : 'unknown error'
+}
+
+export const CACHE_PERMISSION_READ = 1
+export const CACHE_PERMISSION_WRITE = 2
+
+const cacheScopesSchema = z.array(
+  z.object({
+    Scope: z.string().min(1),
+    Permission: z.number().int().nonnegative(),
+  }),
+)
+
 function parseJsonScopes(json: string) {
+  let value: unknown
   try {
-    return JSON.parse(json)
-  } catch (err) {
-    throw createError({
-      statusCode: 401,
-      message: 'Invalid JSON in cache scopes',
-      cause: err,
-    })
+    value = JSON.parse(json)
+  } catch {
+    // no `cause`: the parser's message quotes the claim
+    throw createError({ statusCode: 401, message: 'Invalid JSON in cache scopes' })
   }
+
+  const parsed = cacheScopesSchema.safeParse(value)
+  if (!parsed.success) throw createError({ statusCode: 401, message: 'Invalid cache scopes' })
+  return parsed.data
 }
 
 export async function getCacheScope(event: H3Event) {
@@ -86,18 +124,14 @@ export async function getCacheScope(event: H3Event) {
     throw createError({ statusCode: 401, message: 'Authorization header missing or malformed' })
 
   const decoded = await verifyGitHubActionsToken(token).catch((err) => {
-    throw createError({
-      statusCode: 401,
-      message: 'Invalid token',
-      cause: err,
-    })
+    throw createError({ statusCode: 401, message: `Invalid token: ${describeTokenError(err)}` })
   })
 
   const scopesJson = decoded.ac
   if (!scopesJson || typeof scopesJson !== 'string')
     throw createError({ statusCode: 401, message: 'Token does not contain cache scopes' })
 
-  const scopes = parseJsonScopes(scopesJson) as Array<{ Scope: string; Permission: number }>
+  const scopes = parseJsonScopes(scopesJson)
   if (!hasAtLeast(scopes, 1))
     throw createError({ statusCode: 401, message: 'Token does not contain any cache scopes' })
 

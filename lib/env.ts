@@ -1,6 +1,6 @@
 import type { envDbDriverSchema, envStorageDriverSchema } from './schemas'
 import arkenv from 'arkenv'
-import { envSchema } from './schemas'
+import { assertDirectDownloadsRequireTokenValidation, envSchema } from './schemas'
 
 export const env = arkenv(envSchema, {
   env: Object.assign(
@@ -13,3 +13,5 @@ export const env = arkenv(envSchema, {
     process.env,
   ),
 })
+
+assertDirectDownloadsRequireTokenValidation(env)
