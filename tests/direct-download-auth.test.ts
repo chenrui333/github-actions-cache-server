@@ -5,11 +5,13 @@ import type { AddressInfo } from 'node:net'
 
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
+import { setTimeout as sleep } from 'node:timers/promises'
 
+import { type } from 'arkenv'
 import { execa } from 'execa'
 import { exportJWK, SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
-import { assertDirectDownloadsRequireTokenValidation } from '~/lib/schemas'
+import { assertDirectDownloadsRequireTokenValidation, envBaseSchema } from '~/lib/schemas'
 
 // A second server with token validation on, verifying against a local issuer
 // whose keys are generated here, so these tests never reach GitHub.
@@ -30,18 +32,31 @@ const scopeMarker = `refs/heads/marker-${randomUUID()}`
 const claimMarker = `claim-marker-${randomUUID()}`
 
 // holder object instead of bare `let`s (`unicorn/no-top-level-assignment-in-function`)
-const issuer: { url: string; server?: Server } = { url: '' }
+const issuer: {
+  url: string
+  server?: Server
+  keys: object[]
+  jwksFetchedAt: number[]
+} = { url: '', keys: [], jwksFetchedAt: [] }
+
+async function publicJwk(key: KeyObject, kid: string) {
+  return { ...(await exportJWK(key)), kid, alg: 'RS256', use: 'sig' }
+}
 
 async function startIssuer() {
-  const jwk = { ...(await exportJWK(trusted.publicKey)), kid: KID, alg: 'RS256', use: 'sig' }
+  issuer.keys.push(await publicJwk(trusted.publicKey, KID))
   const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json')
     if (req.url === '/.well-known/openid-configuration')
       return res.end(
         JSON.stringify({ issuer: issuer.url, jwks_uri: `${issuer.url}/.well-known/jwks` }),
       )
-    if (req.url === '/.well-known/jwks') return res.end(JSON.stringify({ keys: [jwk] }))
-    res.statusCode = 404
+    if (req.url === '/.well-known/jwks') {
+      issuer.jwksFetchedAt.push(Date.now())
+      return res.end(JSON.stringify({ keys: issuer.keys }))
+    }
+    // a JWKS endpoint that is down
+    res.statusCode = req.url === '/broken-jwks' ? 503 : 404
     res.end('{}')
   })
   const listening = Promise.withResolvers<void>()
@@ -96,12 +111,14 @@ async function mint(
   claims: Claims,
   {
     key = trusted.privateKey,
+    kid = KID,
     iss = issuer.url,
     aud = AUDIENCE,
     exp = '10m',
     nbf,
   }: {
     key?: KeyObject
+    kid?: string
     iss?: string
     aud?: string | null
     exp?: string | number | null
@@ -109,7 +126,7 @@ async function mint(
   } = {},
 ) {
   const jwt = new SignJWT({ ...claims, run_id: claimMarker })
-    .setProtectedHeader({ alg: 'RS256', kid: KID })
+    .setProtectedHeader({ alg: 'RS256', kid })
     .setIssuedAt()
   if (iss) jwt.setIssuer(iss)
   if (aud !== null) jwt.setAudience(aud)
@@ -159,6 +176,10 @@ function lookup(token: string | undefined, key: string) {
   return twirp('GetCacheEntryDownloadURL', token, { key, version: 'v1' })
 }
 
+function parseEnvBase(input: object) {
+  return envBaseSchema({ API_BASE_URL: 'http://localhost', ...input })
+}
+
 describe('direct downloads require token validation (config)', () => {
   const base = {
     ENABLE_DIRECT_DOWNLOADS: true,
@@ -182,6 +203,21 @@ describe('direct downloads require token validation (config)', () => {
     expect(() =>
       assertDirectDownloadsRequireTokenValidation({ ...base, SKIP_TOKEN_VALIDATION: false }),
     ).not.toThrow()
+  })
+
+  test('direct downloads are off by default; the URL TTL defaults to 300 s within 1–3600', () => {
+    expect(parseEnvBase({})).toMatchObject({
+      ENABLE_DIRECT_DOWNLOADS: false,
+      SKIP_TOKEN_VALIDATION: false,
+      UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION: false,
+      DIRECT_DOWNLOAD_URL_TTL_SECONDS: 300,
+    })
+    for (const ttl of [1, 3600])
+      expect(parseEnvBase({ DIRECT_DOWNLOAD_URL_TTL_SECONDS: ttl })).toMatchObject({
+        DIRECT_DOWNLOAD_URL_TTL_SECONDS: ttl,
+      })
+    for (const ttl of [0, 3601, 1.5])
+      expect(parseEnvBase({ DIRECT_DOWNLOAD_URL_TTL_SECONDS: ttl })).toBeInstanceOf(type.errors)
   })
 
   test('the server refuses to start', { timeout: 30_000 }, async () => {
@@ -336,6 +372,101 @@ describe('token validation and direct downloads', () => {
   })
 
   test(
+    'a fork pull request writes only to its own ref and reads the base scopes it lists',
+    { timeout: 30_000 },
+    async () => {
+      const baseRef = `refs/heads/base-${randomUUID()}`
+      const prRef = `refs/pull/${randomUUID()}/merge`
+      const baseKey = `base-${randomUUID()}`
+      await save(
+        await track(mint(claimsFor(repoA, [{ Scope: baseRef, Permission: 3 }]))),
+        baseKey,
+        randomBytes(1024),
+      )
+
+      // the read-only base scope is listed first; writes must still land on the PR ref
+      const pr = await track(
+        mint(
+          claimsFor(repoA, [
+            { Scope: baseRef, Permission: 1 },
+            { Scope: prRef, Permission: 3 },
+          ]),
+        ),
+      )
+      const baseFromPr = await lookup(pr, baseKey)
+      expect(baseFromPr.json.ok).toBe(true)
+
+      const prKey = `pr-${randomUUID()}`
+      await save(pr, prKey, randomBytes(1024))
+      const prFromPr = await lookup(pr, prKey)
+      expect(prFromPr.json.ok).toBe(true)
+      const baseOnly = await track(mint(claimsFor(repoA, [{ Scope: baseRef, Permission: 3 }])))
+      const prFromBase = await lookup(baseOnly, prKey)
+      expect(prFromBase.json.ok).toBe(false)
+
+      // a read-only token cannot finalize an upload either
+      const readOnly = await track(mint(claimsFor(repoA, [{ Scope: prRef, Permission: 1 }])))
+      const finalize = await twirp('FinalizeCacheEntryUpload', readOnly, {
+        key: prKey,
+        version: 'v1',
+        size_bytes: 1024,
+      })
+      expect(finalize.status).toBe(403)
+    },
+  )
+
+  test('accepts a key rotated in by the issuer (new kid)', { timeout: 60_000 }, async () => {
+    const rotated = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    const rotatedKid = 'rotated-key'
+    const token = await track(mint(claimsFor(repoA), { key: rotated.privateKey, kid: rotatedKid }))
+    issuer.keys.push(await publicJwk(rotated.publicKey, rotatedKid))
+
+    // A real wait: the server process refetches the JWKS for an unknown kid at
+    // most once per 30 s (jose's cooldown), and fake timers can't reach into it.
+    const fetches = issuer.jwksFetchedAt.length
+    expect(fetches).toBeGreaterThan(0)
+    await sleep(Math.max(0, issuer.jwksFetchedAt.at(-1)! + 31_000 - Date.now()))
+
+    const res = await lookup(token, randomUUID())
+    expect(res.status).toBe(200)
+    expect(issuer.jwksFetchedAt.length).toBeGreaterThan(fetches)
+  })
+
+  test('fails closed with 401 when the JWKS cannot be fetched', { timeout: 30_000 }, async () => {
+    const port = PORT + 1
+    const broken = startServer({
+      NITRO_PORT: String(port),
+      API_BASE_URL: `http://localhost:${port}`,
+      SKIP_TOKEN_VALIDATION: 'false',
+      ACTIONS_TOKEN_ISSUER: issuer.url,
+      ACTIONS_TOKEN_JWKS_URL: `${issuer.url}/broken-jwks`,
+    })
+    let brokenLogs = ''
+    broken.all?.on('data', (chunk: Buffer) => {
+      brokenLogs += chunk.toString()
+    })
+    try {
+      if ((await readyOrExited(broken)) !== 'ready')
+        throw new Error(`server failed to start:\n${brokenLogs}`)
+      const token = await track(mint(claimsFor(repoA)))
+      const res = await fetch(
+        `http://localhost:${port}/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
+          body: JSON.stringify({ key: randomUUID(), version: 'v1' }),
+        },
+      )
+      expect(res.status).toBe(401)
+      expect(brokenLogs).not.toContain(token)
+      expect(brokenLogs).not.toContain(claimMarker)
+    } finally {
+      broken.kill()
+      await broken
+    }
+  })
+
+  test(
     'an authorized lookup of a merged entry gets a URL that expires within the TTL',
     { timeout: 60_000 },
     async () => {
@@ -367,9 +498,11 @@ describe('token validation and direct downloads', () => {
         },
         { timeout: 30_000, interval: 200 },
       )
-      const expires = Number(
-        url.searchParams.get('X-Amz-Expires') ?? url.searchParams.get('X-Goog-Expires'),
-      )
+      // S3 signs a relative lifetime; GCS (V2 signing) an absolute epoch second
+      const gcsExpiresAt = url.searchParams.get('Expires')
+      const expires = gcsExpiresAt
+        ? Number(gcsExpiresAt) - Math.floor(Date.now() / 1000)
+        : Number(url.searchParams.get('X-Amz-Expires'))
       expect(expires).toBeGreaterThan(0)
       expect(expires).toBeLessThanOrEqual(URL_TTL_SECONDS)
 
@@ -391,7 +524,7 @@ describe('token validation and direct downloads', () => {
     // jose decodes from a rejected token must not.
     expect(logs).not.toContain(claimMarker)
     expect(logs).not.toContain('X-Amz-Signature')
-    expect(logs).not.toContain('X-Goog-Signature')
+    expect(logs).not.toContain('GoogleAccessId=')
     // rejections are still diagnosable
     expect(logs).toContain('ERR_JWT_EXPIRED')
   })
