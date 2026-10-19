@@ -2,7 +2,7 @@ import type { H3Event } from 'h3'
 import * as jose from 'jose'
 import { hasAtLeast } from 'remeda'
 import { z } from 'zod'
-import { env } from './env'
+import { actionsTokenAudience, env } from './env'
 import { logger } from './logger'
 
 const issuer = env.ACTIONS_TOKEN_ISSUER.replace(/\/$/, '')
@@ -59,13 +59,6 @@ function getBearerToken(event: H3Event) {
   return authHeader.slice(7)
 }
 
-// Unset means no audience check. GitHub-issued runtime tokens carry a
-// deployment-specific `aud`, so pinning it restricts the server to one
-// installation's tokens; a comma-separated list allows several.
-const audience = env.ACTIONS_TOKEN_AUDIENCE?.split(',')
-  .map((value) => value.trim())
-  .filter(Boolean)
-
 async function verifyGitHubActionsToken(token: string) {
   if (env.SKIP_TOKEN_VALIDATION) {
     logger.warn('Token validation is disabled. This should not be used in production!')
@@ -74,7 +67,7 @@ async function verifyGitHubActionsToken(token: string) {
 
   const { payload } = await jose.jwtVerify(token, await getJwks(), {
     issuer,
-    audience: audience?.length ? audience : undefined,
+    audience: actionsTokenAudience,
     // jose checks `exp` and `nbf` only when present; a token without `exp`
     // would otherwise never expire.
     requiredClaims: ['exp'],

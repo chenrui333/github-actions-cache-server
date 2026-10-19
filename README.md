@@ -48,7 +48,7 @@ They require token validation: the server refuses to start with `SKIP_TOKEN_VALI
 | Variable                                                 | Default | Effect                                                                                            |
 | -------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
 | `DIRECT_DOWNLOAD_URL_TTL_SECONDS`                        | `300`   | Lifetime of a signed download URL, `1` to `3600`. Raise it only for clients that fetch URLs late. |
-| `ACTIONS_TOKEN_AUDIENCE`                                 | unset   | Comma-separated `aud` values a token must carry; unset skips the audience check.                  |
+| `ACTIONS_TOKEN_AUDIENCE`                                 | unset   | Comma-separated `aud` values a token must carry; unset skips the check, an empty list is refused. |
 | `UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION` | `false` | Allows direct downloads with `SKIP_TOKEN_VALIDATION=true`. Local testing only.                    |
 
 ## Documentation

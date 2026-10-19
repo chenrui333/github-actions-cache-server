@@ -111,3 +111,22 @@ export function assertDirectDownloadsRequireTokenValidation(
         'Unset SKIP_TOKEN_VALIDATION, or set UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION=true for local testing only.',
     )
 }
+
+/**
+ * The `aud` values a token must carry. Unset means no audience check; set but
+ * listing no audience (blank, or only commas) is refused, so a typo cannot
+ * silently switch the check off.
+ */
+export function parseActionsTokenAudience(value: string | undefined) {
+  if (value === undefined) return
+  const audience = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  if (audience.length === 0)
+    throw new Error(
+      'ACTIONS_TOKEN_AUDIENCE is set but lists no audience. ' +
+        'Set one or more comma-separated audiences, or unset it to skip the audience check.',
+    )
+  return audience
+}

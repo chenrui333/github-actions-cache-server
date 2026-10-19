@@ -11,7 +11,11 @@ import { type } from 'arkenv'
 import { execa } from 'execa'
 import { exportJWK, SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
-import { assertDirectDownloadsRequireTokenValidation, envBaseSchema } from '~/lib/schemas'
+import {
+  assertDirectDownloadsRequireTokenValidation,
+  envBaseSchema,
+  parseActionsTokenAudience,
+} from '~/lib/schemas'
 
 // A second server with token validation on, verifying against a local issuer
 // whose keys are generated here, so these tests never reach GitHub.
@@ -229,6 +233,28 @@ describe('direct downloads require token validation (config)', () => {
     const result = await server
     expect(result.exitCode).not.toBe(0)
     expect(result.all).toContain('ENABLE_DIRECT_DOWNLOADS=true requires token validation')
+  })
+})
+
+describe('token audience (config)', () => {
+  test('unset skips the audience check; a list is trimmed', () => {
+    expect(parseActionsTokenAudience(undefined)).toBeUndefined()
+    expect(parseActionsTokenAudience(' a, b ,')).toEqual(['a', 'b'])
+  })
+
+  test.each(['', ' ', ',', ' , ,'])('refuses %j, which lists no audience', (value) => {
+    expect(() => parseActionsTokenAudience(value)).toThrow('lists no audience')
+  })
+
+  test('the server refuses to start with an empty audience list', { timeout: 30_000 }, async () => {
+    const server = startServer({ ACTIONS_TOKEN_AUDIENCE: ' , ' })
+    if ((await readyOrExited(server)) === 'ready') {
+      server.kill()
+      throw new Error('server started with an empty ACTIONS_TOKEN_AUDIENCE')
+    }
+    const result = await server
+    expect(result.exitCode).not.toBe(0)
+    expect(result.all).toContain('ACTIONS_TOKEN_AUDIENCE is set but lists no audience')
   })
 })
 
