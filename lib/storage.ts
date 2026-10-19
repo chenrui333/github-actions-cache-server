@@ -4,7 +4,8 @@ import type { Writable } from 'node:stream'
 import type { Database, StorageLocation } from './db'
 import type { MergeKind, S3Pool } from './metrics'
 import type { Env } from './schemas'
-import { randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import { Agent as HttpAgent } from 'node:http'
@@ -381,6 +382,25 @@ export class Storage {
     return Promise.all(this.mergeStreamPromises)
   }
 
+  /**
+   * Whether `capability` is the one issued with the Upload. Upload URLs are not
+   * covered by the Actions runtime token, so this is their only authorization.
+   * Unknown Uploads and missing or wrong capabilities are indistinguishable.
+   */
+  async authorizeUpload(uploadId: number, capability: string | undefined) {
+    const upload = await this.db
+      .selectFrom('uploads')
+      .where('id', '=', uploadId)
+      .select('capabilityHash')
+      .executeTakeFirst()
+    if (!upload?.capabilityHash || !capability) return false
+
+    return timingSafeEqual(
+      Buffer.from(upload.capabilityHash, 'hex'),
+      createHash('sha256').update(capability).digest(),
+    )
+  }
+
   async uploadPart(uploadId: number, partIndex: number, stream: Readable) {
     const upload = await this.db
       .selectFrom('uploads')
@@ -672,6 +692,9 @@ export class Storage {
     if (existingUpload) return
 
     const uploadId = generateNumberId()
+    // Only the hash is stored, so neither the database nor its query log can
+    // reproduce a working upload URL.
+    const capability = randomBytes(32).toString('hex')
     await this.db
       .insertInto('uploads')
       .values({
@@ -685,10 +708,11 @@ export class Storage {
         lastPartUploadedAt: null,
         finishedPartUploadCount: 0,
         startedPartUploadCount: 0,
+        capabilityHash: createHash('sha256').update(capability).digest('hex'),
       })
       .execute()
 
-    return { id: uploadId }
+    return { id: uploadId, capability }
   }
 
   async matchCacheEntry({
