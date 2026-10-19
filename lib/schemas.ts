@@ -78,6 +78,9 @@ export const envBaseSchema = type({
   'BENCHMARK': 'boolean = false',
   'SKIP_TOKEN_VALIDATION': 'boolean = false',
   'MANAGEMENT_API_KEY?': 'string',
+  // Unset: the SQLite file keeps the journal mode it has. `wal` lets cluster
+  // workers share it (ADR-0010); `delete` converts it back.
+  'DB_SQLITE_JOURNAL_MODE?': "'wal' | 'delete'",
 })
 
 export const envSchema = envBaseSchema.and(envStorageDriverSchema).and(envDbDriverSchema)

@@ -1,12 +1,22 @@
 import type { Registry } from 'prom-client'
 import cluster from 'node:cluster'
 import { randomUUID } from 'node:crypto'
+import os from 'node:os'
 import { AggregatorRegistry } from 'prom-client'
 
 // Workers of a `node-cluster` deployment share the port round-robin, so a scrape
 // lands on one of them. The worker answering /metrics asks the primary, which
 // collects every worker's registry over cluster IPC with prom-client's
 // AggregatorRegistry and returns the merged text. See ADR-0011.
+
+/**
+ * Whether /metrics aggregates across workers: only in a `node-cluster`
+ * deployment of several workers. One worker (the image's default) serves its
+ * own registry, exactly as without a cluster. Counts workers the way Nitro's
+ * `node-cluster` primary does: `NITRO_CLUSTER_WORKERS`, else one per CPU.
+ */
+export const clusterMetricsAggregated =
+  (Number.parseInt(process.env.NITRO_CLUSTER_WORKERS || '') || os.cpus().length || 1) > 1
 
 const AGGREGATE_REQUEST = 'cache-server:aggregate-metrics'
 const AGGREGATE_RESPONSE = 'cache-server:aggregated-metrics'

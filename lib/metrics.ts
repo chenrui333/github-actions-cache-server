@@ -3,18 +3,18 @@ import cluster from 'node:cluster'
 import { performance } from 'node:perf_hooks'
 import { sql } from 'kysely'
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client'
-import { joinClusterMetrics } from './cluster-metrics'
+import { clusterMetricsAggregated, joinClusterMetrics } from './cluster-metrics'
 import { getDatabase } from './db'
 
-// Per-process registry. With NITRO_CLUSTER_WORKERS>1, /metrics serves the sum of
-// every worker's registry, aggregated by the cluster primary (ADR-0011): metrics
-// default to `sum`; gauges computed from the shared database use `max` so N
-// workers do not report N times the same rows.
+// Per-process registry. With several NITRO_CLUSTER_WORKERS, /metrics serves the
+// sum of every worker's registry, aggregated by the cluster primary (ADR-0011):
+// metrics default to `sum`; gauges computed from the shared database use `max`
+// so N workers do not report N times the same rows.
 export const metricsRegistry = new Registry()
 
 collectDefaultMetrics({ register: metricsRegistry })
 
-if (cluster.isWorker) joinClusterMetrics(metricsRegistry)
+if (cluster.isWorker && clusterMetricsAggregated) joinClusterMetrics(metricsRegistry)
 
 export const cacheRequestsTotal = new Counter({
   name: 'cache_requests_total',

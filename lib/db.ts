@@ -153,28 +153,41 @@ async function retrySqliteBusyUntil<T>(deadline: number, run: () => T | Promise<
 }
 
 /**
- * Opens the SQLite file in WAL mode so the workers of a `node-cluster`
- * deployment can share it: readers never block the single writer, and the
- * writer never blocks readers. `synchronous=NORMAL` is the recommended pairing
- * with WAL: a process crash loses nothing, a power loss or kernel crash can
- * roll back the last commits before the next checkpoint but never corrupts the
- * file. See ADR-0010.
+ * Opens the SQLite file. The journal mode is a persistent property of the file
+ * and is only changed when `DB_SQLITE_JOURNAL_MODE` asks for it, so by default
+ * an existing database keeps its mode (SQLite creates new files in rollback
+ * journal mode). `wal` lets the workers of a `node-cluster` deployment share
+ * the file: readers never block the single writer, and the writer never blocks
+ * readers. It pairs with `synchronous=NORMAL`: a process crash loses nothing, a
+ * power loss or kernel crash can roll back the last commits before the next
+ * checkpoint but never corrupts the file. See ADR-0010.
  */
-async function openSqlite(file: string) {
+async function openSqlite(file: string, journalMode: 'wal' | 'delete' | undefined) {
   await mkdir(path.dirname(file), { recursive: true })
   const database = new SQLite(file, { timeout: SQLITE_BUSY_TIMEOUT_MS })
   database.pragma(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`)
-  // The journal mode is persistent; switching needs a moment of exclusive
-  // access, which another process starting at the same time may hold.
-  const journalMode = await retrySqliteBusyUntil(Date.now() + SQLITE_STARTUP_LOCK_TIMEOUT_MS, () =>
-    database.pragma('journal_mode = WAL', { simple: true }),
-  )
-  if (journalMode !== 'wal') {
-    database.close()
-    throw new Error(`SQLite did not switch to WAL journal mode (got ${String(journalMode)})`)
+  if (!journalMode) return database
+  // Switching needs a moment of exclusive access, which another process
+  // starting at the same time may hold: SQLite then fails with SQLITE_BUSY or
+  // returns the unchanged mode.
+  const deadline = Date.now() + SQLITE_STARTUP_LOCK_TIMEOUT_MS
+  for (;;) {
+    const mode: unknown = await retrySqliteBusyUntil(deadline, (): unknown =>
+      database.pragma(`journal_mode = ${journalMode}`, { simple: true }),
+    )
+    if (mode === journalMode) break
+    if (Date.now() >= deadline) {
+      database.close()
+      throw new Error(
+        `SQLite did not switch to the ${journalMode} journal mode (got ${String(mode)})`,
+      )
+    }
+    await sleep(100)
   }
-  database.pragma('synchronous = NORMAL')
-  database.pragma(`journal_size_limit = ${SQLITE_JOURNAL_SIZE_LIMIT_BYTES}`)
+  if (journalMode === 'wal') {
+    database.pragma('synchronous = NORMAL')
+    database.pragma(`journal_size_limit = ${SQLITE_JOURNAL_SIZE_LIMIT_BYTES}`)
+  }
   return database
 }
 
@@ -281,7 +294,7 @@ export const getDatabase = createSingletonPromise(async () => {
       },
       async (env) =>
         new ImmediateSqliteDialect({
-          database: await openSqlite(env.DB_SQLITE_PATH),
+          database: await openSqlite(env.DB_SQLITE_PATH, env.DB_SQLITE_JOURNAL_MODE),
         }),
     )
     .exhaustive()

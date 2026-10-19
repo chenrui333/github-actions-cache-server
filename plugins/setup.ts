@@ -2,7 +2,7 @@
 import cluster from 'node:cluster'
 
 import { H3Error } from 'h3'
-import { serveClusterMetrics } from '~/lib/cluster-metrics'
+import { clusterMetricsAggregated, serveClusterMetrics } from '~/lib/cluster-metrics'
 import { getDatabase } from '~/lib/db'
 import { env } from '~/lib/env'
 import { logger } from '~/lib/logger'
@@ -25,7 +25,7 @@ export default defineNitroPlugin(async (nitro) => {
       })
     }
   }
-  if (isClusterPrimary) serveClusterMetrics()
+  if (isClusterPrimary && clusterMetricsAggregated) serveClusterMetrics()
 
   const db = await getDatabase().catch((err) => {
     logger.error('Failed to initialize database:', err)
