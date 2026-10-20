@@ -237,9 +237,14 @@ describe('cache entry matching', () => {
     try {
       await expect(migrator.migrateToLatest()).resolves.not.toHaveProperty('error')
       expect(indexes()).toEqual(['idx_cache_entries_lookup', 'idx_cache_entries_lookup_prefix'])
-      await expect(migrator.migrateDown()).resolves.not.toHaveProperty('error')
+      // Explicit targets: later migrations sit above `$7`, so a single step down would not reach it.
+      await expect(
+        migrator.migrateTo('$6_cache_entries_locationId_index'),
+      ).resolves.not.toHaveProperty('error')
       expect(indexes()).toEqual([])
-      await expect(migrator.migrateUp()).resolves.not.toHaveProperty('error')
+      await expect(
+        migrator.migrateTo('$7_cache_entries_lookup_indexes'),
+      ).resolves.not.toHaveProperty('error')
       expect(indexes()).toEqual(['idx_cache_entries_lookup', 'idx_cache_entries_lookup_prefix'])
     } finally {
       await db.destroy()

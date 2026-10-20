@@ -248,5 +248,16 @@ export function migrations(
         await dropIndex(db, 'idx_cache_entries_lookup', 'cache_entries')
       },
     },
+    $8_upload_capability_hash: {
+      // SHA-256 of the capability carried by an Upload's URL. Uploads created
+      // before this migration have none, so their URLs stop accepting parts;
+      // `cleanup:uploads` removes them once idle.
+      async up(db) {
+        await db.schema.alterTable('uploads').addColumn('capabilityHash', 'varchar(64)').execute()
+      },
+      async down(db) {
+        await db.schema.alterTable('uploads').dropColumn('capabilityHash').execute()
+      },
+    },
   } satisfies Record<string, Migration>
 }

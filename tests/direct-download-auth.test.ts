@@ -166,7 +166,10 @@ async function save(token: string, key: string, data: Buffer) {
   const uploadUrl = created.json.signed_upload_url as string
   const part = await fetch(uploadUrl, { method: 'PUT', body: new Uint8Array(data) })
   expect(part.status).toBe(201)
-  const blocklist = await fetch(`${uploadUrl}?comp=blocklist`, { method: 'PUT' })
+  // The signed URL already has a query (the upload capability), so append to it.
+  const blocklistUrl = new URL(uploadUrl)
+  blocklistUrl.searchParams.set('comp', 'blocklist')
+  const blocklist = await fetch(blocklistUrl, { method: 'PUT' })
   expect(blocklist.status).toBe(201)
   const finalized = await twirp('FinalizeCacheEntryUpload', token, {
     key,
