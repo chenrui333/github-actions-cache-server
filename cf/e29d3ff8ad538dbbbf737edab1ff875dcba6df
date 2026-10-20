@@ -1,0 +1,18 @@
+lib/api/cache-entries.ts
+  h_9df9c32c3f321d 167
+tests/setup.ts
+  h_9df9c32c3f321d 40
+tests/write-authorization.test.ts
+  h_9df9c32c3f321d 1-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cfe29d3ff8ad538dbbbf737edab1ff875dcba6df",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
