@@ -1,0 +1,18 @@
+docs/adr/0013-upload-urls-carry-a-capability.md
+  h_9df9c32c3f321d 9
+routes/[...path].ts
+  h_9df9c32c3f321d 5-8,10-14
+tests/request-logging.test.ts
+  h_9df9c32c3f321d 42,59-60,114-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d5dbed0fe2ec0700b62f8d6834a53f9379de7f6b",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
