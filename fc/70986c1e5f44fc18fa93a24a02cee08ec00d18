@@ -1,0 +1,38 @@
+README.md
+  h_5dda3d103c2e5e 45-46
+docs/adr/0007-per-process-metrics-no-cross-worker-aggregation.md
+  h_5dda3d103c2e5e 3-4
+docs/adr/0010-sqlite-wal-lets-cluster-workers-share-the-database.md
+  h_5dda3d103c2e5e 1-28
+docs/adr/0011-metrics-are-aggregated-across-cluster-workers.md
+  h_5dda3d103c2e5e 1-11
+lib/api/storage-locations.ts
+  h_5dda3d103c2e5e 51-56
+lib/cluster-metrics.ts
+  h_5dda3d103c2e5e 1-82
+lib/db.ts
+  h_5dda3d103c2e5e 1,4,8-16,104-109,112,119-120,133-242,264-267,296-299,334-343
+lib/metrics.ts
+  h_5dda3d103c2e5e 2,6,9-12,17-18,42,99,108,110,139,215
+lib/schemas.ts
+  h_5dda3d103c2e5e 84-86
+plugins/setup.ts
+  h_5dda3d103c2e5e 5,13-15,28,30,39-43,46-47
+routes/metrics.ts
+  h_5dda3d103c2e5e 1-2,6,8-10
+tests/sqlite-contender.ts
+  h_5dda3d103c2e5e 1-172
+tests/sqlite-multiprocess.test.ts
+  h_5dda3d103c2e5e 1-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fc70986c1e5f44fc18fa93a24a02cee08ec00d18",
+  "prompts": {},
+  "humans": {
+    "h_5dda3d103c2e5e": {
+      "author": "Rui Chen <rchen@local>"
+    }
+  }
+}
