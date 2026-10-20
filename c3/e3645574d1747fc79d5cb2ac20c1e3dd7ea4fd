@@ -1,0 +1,30 @@
+docs/adr/0013-upload-urls-carry-a-capability.md
+  h_5dda3d103c2e5e 1-11
+lib/db.ts
+  h_5dda3d103c2e5e 71
+lib/migrations.ts
+  h_5dda3d103c2e5e 251-261
+lib/storage.ts
+  h_5dda3d103c2e5e 7-8,423-441,733-735,749,753
+routes/devstoreaccount1/upload/[uploadId].put.ts
+  h_5dda3d103c2e5e 6,22-38,40-55
+routes/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry.post.ts
+  h_5dda3d103c2e5e 31-34
+tests/proxy-backpressure.test.ts
+  h_5dda3d103c2e5e 157-163
+tests/upload-authorization.test.ts
+  h_5dda3d103c2e5e 1-167
+tests/upload-capability-migration.test.ts
+  h_5dda3d103c2e5e 1-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c3e3645574d1747fc79d5cb2ac20c1e3dd7ea4fd",
+  "prompts": {},
+  "humans": {
+    "h_5dda3d103c2e5e": {
+      "author": "Rui Chen <rchen@local>"
+    }
+  }
+}
