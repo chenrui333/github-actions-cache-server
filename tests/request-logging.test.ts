@@ -39,6 +39,7 @@ const reporter: ConsolaReporter = {
 }
 const originalLevel = logger.level
 const originalDebug = env.DEBUG
+const proxyRequest = vi.fn(() => null)
 
 beforeAll(async () => {
   for (const [name, value] of Object.entries(h3)) vi.stubGlobal(name, value)
@@ -55,8 +56,8 @@ beforeAll(async () => {
   requestLogging({ hooks } as unknown as NitroApp)
   const { default: upload } = await import('~/routes/devstoreaccount1/upload/[uploadId].put')
   const { default: passthrough } = await import('~/routes/[...path]')
-  // The upstream Results service is not under test; only what gets logged is.
-  vi.stubGlobal('proxyRequest', () => null)
+  // The upstream Results service is not under test; only what is logged and forwarded is.
+  vi.stubGlobal('proxyRequest', proxyRequest)
   router.put('/upload/:uploadId', upload).use('/**', passthrough)
   server.listen(0)
   await once(server, 'listening')
@@ -110,6 +111,14 @@ test('upload capabilities stay out of request and error logs', async () => {
   )
   expect(mistyped.status).toBe(204)
   await vi.waitFor(() => expect(logs.join('\n')).toContain(`proxying unknown path`))
+  expect(proxyRequest).toHaveBeenCalledTimes(1)
+
+  // An Upload URL with an unsupported method is refused, not forwarded upstream.
+  for (const method of ['POST', 'HEAD', 'GET']) {
+    const response = await fetch(url, { method })
+    expect(response.status).toBe(405)
+  }
+  expect(proxyRequest).toHaveBeenCalledTimes(1)
 
   const logged = logs.join('\n')
   expect(logged).toContain(`/upload/${created.id}`)
