@@ -1,0 +1,16 @@
+lib/migrations.ts
+  h_5dda3d103c2e5e 226-231,233,241-243,246-247
+tests/cache-entry-matching.test.ts
+  h_5dda3d103c2e5e 153-197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1b42dd7690b442f6c3973f4616e83cfb9c4fceb2",
+  "prompts": {},
+  "humans": {
+    "h_5dda3d103c2e5e": {
+      "author": "Rui Chen <rchen@local>"
+    }
+  }
+}
