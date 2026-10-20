@@ -54,7 +54,10 @@ beforeAll(async () => {
   // `hookable` here is the app's copy, not Nitro's; the runtime API is the same.
   requestLogging({ hooks } as unknown as NitroApp)
   const { default: upload } = await import('~/routes/devstoreaccount1/upload/[uploadId].put')
-  router.put('/upload/:uploadId', upload)
+  const { default: passthrough } = await import('~/routes/[...path]')
+  // The upstream Results service is not under test; only what gets logged is.
+  vi.stubGlobal('proxyRequest', () => null)
+  router.put('/upload/:uploadId', upload).use('/**', passthrough)
   server.listen(0)
   await once(server, 'listening')
 })
@@ -100,6 +103,13 @@ test('upload capabilities stay out of request and error logs', async () => {
   })
   expect(failed.status).toBe(500)
   await vi.waitFor(() => expect(logs.join('\n')).toContain('> 500'))
+
+  // A mistyped Upload URL falls through to the Results Passthrough.
+  const mistyped = await fetch(
+    `http://localhost:${port}/uploads/${created.id}?sig=${created.capability}`,
+  )
+  expect(mistyped.status).toBe(204)
+  await vi.waitFor(() => expect(logs.join('\n')).toContain(`proxying unknown path`))
 
   const logged = logs.join('\n')
   expect(logged).toContain(`/upload/${created.id}`)
