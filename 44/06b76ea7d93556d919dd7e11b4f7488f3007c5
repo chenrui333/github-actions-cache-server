@@ -1,0 +1,20 @@
+lib/helpers.ts
+  h_5dda3d103c2e5e 1,9-16
+plugins/request-logging.ts
+  h_5dda3d103c2e5e 3
+routes/[...path].ts
+  h_5dda3d103c2e5e 2,6
+tests/request-logging.test.ts
+  h_5dda3d103c2e5e 57-60,107-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4406b76ea7d93556d919dd7e11b4f7488f3007c5",
+  "prompts": {},
+  "humans": {
+    "h_5dda3d103c2e5e": {
+      "author": "Rui Chen <rchen@local>"
+    }
+  }
+}
