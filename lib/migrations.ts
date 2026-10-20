@@ -2,6 +2,7 @@ import type { Hookable } from 'hookable'
 import type { Kysely } from 'kysely'
 import type { Migration } from 'kysely/migration'
 import type { Env } from './schemas'
+import { sql } from 'kysely'
 import { Storage } from './storage'
 
 export function migrations(
@@ -218,6 +219,33 @@ export function migrations(
       },
       async down(db) {
         await dropIndex(db, 'idx_cache_entries_locationId', 'cache_entries')
+      },
+    },
+    $7_cache_entries_lookup_indexes: {
+      // Every `matchCacheEntry` probe filters on repoId, scope and version and
+      // then on the key. SQLite's single-column indexes leave the planner a
+      // poor choice (repoId or scope alone) without `sqlite_stat1`; these cover
+      // the whole predicate. SQLite only: MySQL's four utf8mb4 varchar columns
+      // exceed InnoDB's 3072-byte index key limit, and Postgres limits a B-tree
+      // entry to about a third of a page, which four unbounded text columns of
+      // an existing row could exceed and fail the migration.
+      async up(db) {
+        if (driver !== 'sqlite') return
+        await db.schema
+          .createIndex('idx_cache_entries_lookup')
+          .on('cache_entries')
+          .columns(['repoId', 'scope', 'version', 'key'])
+          .execute()
+        // SQLite's LIKE is case-insensitive, so only a NOCASE index on the key
+        // turns the prefix match into a range scan (the LIKE optimization).
+        await sql`create index ${sql.ref('idx_cache_entries_lookup_prefix')} on ${sql.table('cache_entries')} (${sql.ref('repoId')}, ${sql.ref('scope')}, ${sql.ref('version')}, ${sql.ref('key')} collate nocase)`.execute(
+          db,
+        )
+      },
+      async down(db) {
+        if (driver !== 'sqlite') return
+        await dropIndex(db, 'idx_cache_entries_lookup_prefix', 'cache_entries')
+        await dropIndex(db, 'idx_cache_entries_lookup', 'cache_entries')
       },
     },
     $8_upload_capability_hash: {
