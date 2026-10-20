@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { env } from '~/lib/env'
-import { getCacheScope } from '~/lib/scope'
+import { CACHE_PERMISSION_WRITE, getCacheScope } from '~/lib/scope'
 import { getStorage } from '~/lib/storage'
 import { readTwirpRequest, sendTwirpResponse, TwirpMessage } from '~/lib/twirp'
 
@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
   )
 
   const storage = await getStorage()
-  const writeScope = scopes.find((s) => s.Permission >= 2)
+  const writeScope = scopes.find((s) => (s.Permission & CACHE_PERMISSION_WRITE) !== 0)
   if (!writeScope)
     throw createError({ statusCode: 403, message: 'No scope with write permission found' })
 
@@ -28,7 +28,10 @@ export default defineEventHandler(async (event) => {
   return sendTwirpResponse(
     event,
     upload
-      ? { ok: true, signed_upload_url: `${env.API_BASE_URL}/devstoreaccount1/upload/${upload.id}` }
+      ? {
+          ok: true,
+          signed_upload_url: `${env.API_BASE_URL}/devstoreaccount1/upload/${upload.id}?sig=${upload.capability}`,
+        }
       : { ok: false },
     TwirpMessage.CreateCacheEntryResponse,
   )

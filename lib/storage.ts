@@ -4,7 +4,8 @@ import type { Writable } from 'node:stream'
 import type { Database, StorageLocation } from './db'
 import type { MergeKind, S3Pool } from './metrics'
 import type { Env } from './schemas'
-import { randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import { Agent as HttpAgent } from 'node:http'
@@ -40,7 +41,7 @@ import { cacheMergesSkippedTotal, instrumentS3Agent, observeS3Request, trackMerg
 import {
   acquireMergeLease,
   createReaderLease,
-  DIRECT_DOWNLOAD_LEASE_DURATION_MS,
+  DIRECT_DOWNLOAD_LEASE_MARGIN_MS,
   LEASE_RENEWAL_MS,
   releaseMergeLease,
   releaseReaderLease,
@@ -53,11 +54,49 @@ import { deleteStorageLocationIfUnread, noActiveReaderLease } from './storage-li
 // Entries for the same prefix — caps a pathological scan (ADR-0005).
 const MAX_DANGLING_PURGE_ATTEMPTS = 10
 
+/**
+ * `!` escapes LIKE metacharacters instead of `\`: the ESCAPE clause is a SQL
+ * literal (below), and `'!'` reads the same in every dialect, while a
+ * backslash literal depends on server settings (MySQL `NO_BACKSLASH_ESCAPES`,
+ * Postgres `standard_conforming_strings`).
+ */
+const LIKE_ESCAPE = '!'
+
 function escapeLikePattern(value: string) {
-  return value
-    .replaceAll('\\', '\\\\')
-    .replaceAll('%', String.raw`\%`)
-    .replaceAll('_', String.raw`\_`)
+  return value.replaceAll(/[!%_]/g, (char) => `${LIKE_ESCAPE}${char}`)
+}
+
+/**
+ * The most recently updated Cache Entry whose key equals `key` (`exact`) or
+ * starts with it (`prefix`) in one scope: a single probe of `matchCacheEntry`.
+ * The ESCAPE character is a literal, not a bound parameter: SQLite only turns a
+ * `LIKE 'prefix%'` into a range scan of an index when the escape is a constant,
+ * and the `key COLLATE NOCASE` index (migration `$7`) then serves the
+ * case-insensitive prefix match. Exported for query-plan tests.
+ */
+export function cacheEntryCandidateQuery(
+  db: Kysely<Database>,
+  {
+    key,
+    match,
+    version,
+    scope,
+    repoId,
+  }: { key: string; match: 'exact' | 'prefix'; version: string; scope: string; repoId: string },
+) {
+  return db
+    .selectFrom('cache_entries')
+    .where(
+      match === 'exact'
+        ? sql<boolean>`${sql.ref('key')} = ${key}`
+        : sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(key)}%`} escape ${sql.lit(LIKE_ESCAPE)}`,
+    )
+    .where('version', '=', version)
+    .where('scope', '=', scope)
+    .where('repoId', '=', repoId)
+    .orderBy('updatedAt', 'desc')
+    .limit(1)
+    .selectAll()
 }
 
 /**
@@ -381,6 +420,25 @@ export class Storage {
     return Promise.all(this.mergeStreamPromises)
   }
 
+  /**
+   * Whether `capability` is the one issued with the Upload. Upload URLs are not
+   * covered by the Actions runtime token, so this is their only authorization.
+   * Unknown Uploads and missing or wrong capabilities are indistinguishable.
+   */
+  async authorizeUpload(uploadId: number, capability: string | undefined) {
+    const upload = await this.db
+      .selectFrom('uploads')
+      .where('id', '=', uploadId)
+      .select('capabilityHash')
+      .executeTakeFirst()
+    if (!upload?.capabilityHash || !capability) return false
+
+    return timingSafeEqual(
+      Buffer.from(upload.capabilityHash, 'hex'),
+      createHash('sha256').update(capability).digest(),
+    )
+  }
+
   async uploadPart(uploadId: number, partIndex: number, stream: Readable) {
     const upload = await this.db
       .selectFrom('uploads')
@@ -672,6 +730,9 @@ export class Storage {
     if (existingUpload) return
 
     const uploadId = generateNumberId()
+    // Only the hash is stored, so neither the database nor its query log can
+    // reproduce a working upload URL.
+    const capability = randomBytes(32).toString('hex')
     await this.db
       .insertInto('uploads')
       .values({
@@ -685,10 +746,11 @@ export class Storage {
         lastPartUploadedAt: null,
         finishedPartUploadCount: 0,
         startedPartUploadCount: 0,
+        capabilityHash: createHash('sha256').update(capability).digest('hex'),
       })
       .execute()
 
-    return { id: uploadId }
+    return { id: uploadId, capability }
   }
 
   async matchCacheEntry({
@@ -703,69 +765,32 @@ export class Storage {
     repoId: string
   }) {
     const [primaryKey, ...restoreKeys] = keys
+    const find = (key: string, match: 'exact' | 'prefix', scope: string) =>
+      cacheEntryCandidateQuery(this.db, { key, match, version, scope, repoId }).executeTakeFirst()
     for (const scope of scopes) {
-      const exactPrimaryMatch = await this.db
-        .selectFrom('cache_entries')
-        .where('key', '=', primaryKey)
-        .where('version', '=', version)
-        .where('scope', '=', scope)
-        .where('repoId', '=', repoId)
-        .selectAll()
-        .executeTakeFirst()
+      const exactPrimaryMatch = await find(primaryKey, 'exact', scope)
       if (exactPrimaryMatch)
         return {
           match: exactPrimaryMatch,
           type: 'exact-primary' as const,
         }
 
-      const prefixedPrimaryMatch = await this.db
-        .selectFrom('cache_entries')
-        .where(
-          sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(primaryKey)}%`} escape ${'\\'}`,
-        )
-        .where('version', '=', version)
-        .where('scope', '=', scope)
-        .where('repoId', '=', repoId)
-        .orderBy('cache_entries.updatedAt', 'desc')
-        .selectAll()
-        .executeTakeFirst()
-
+      const prefixedPrimaryMatch = await find(primaryKey, 'prefix', scope)
       if (prefixedPrimaryMatch)
         return {
           match: prefixedPrimaryMatch,
           type: 'prefixed-primary' as const,
         }
 
-      if (restoreKeys.length === 0) continue
-
       for (const key of restoreKeys) {
-        const exactMatch = await this.db
-          .selectFrom('cache_entries')
-          .where('key', '=', key)
-          .where('version', '=', version)
-          .where('scope', '=', scope)
-          .where('repoId', '=', repoId)
-          .orderBy('updatedAt', 'desc')
-          .selectAll()
-          .executeTakeFirst()
+        const exactMatch = await find(key, 'exact', scope)
         if (exactMatch)
           return {
             match: exactMatch,
             type: 'exact-restore' as const,
           }
 
-        const prefixedMatch = await this.db
-          .selectFrom('cache_entries')
-          .where(
-            sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(key)}%`} escape ${'\\'}`,
-          )
-          .where('version', '=', version)
-          .where('scope', '=', scope)
-          .where('repoId', '=', repoId)
-          .orderBy('updatedAt', 'desc')
-          .selectAll()
-          .executeTakeFirst()
-
+        const prefixedMatch = await find(key, 'prefix', scope)
         if (prefixedMatch)
           return {
             match: prefixedMatch,
@@ -807,9 +832,12 @@ export class Storage {
           cacheEntry: cacheEntry.match,
         }
 
-      // Merged entry with direct downloads enabled: take a reader lease bounded
-      // by the signed URL lifetime, then sign.
-      const directDownloadExpiresAt = Date.now() + DIRECT_DOWNLOAD_LEASE_DURATION_MS
+      // Merged entry with direct downloads enabled: take a reader lease that
+      // outlives the signed URL, then sign. Storage authenticates a GET when it
+      // starts, so a download begun just before the URL expires keeps reading
+      // after it; the margin keeps cleanup from deleting the object under it.
+      const urlExpiresAt = Date.now() + env.DIRECT_DOWNLOAD_URL_TTL_SECONDS * 1000
+      const leaseExpiresAt = urlExpiresAt + DIRECT_DOWNLOAD_LEASE_MARGIN_MS
       const leased = await this.db.transaction().execute(async (tx) => {
         let query = tx
           .selectFrom('storage_locations')
@@ -818,7 +846,7 @@ export class Storage {
         if (env.DB_DRIVER !== 'sqlite') query = query.forUpdate()
         const current = await query.executeTakeFirst()
         if (!current?.mergedAt) return current
-        await createReaderLease(tx, current.id, 'storage', directDownloadExpiresAt)
+        await createReaderLease(tx, current.id, 'storage', leaseExpiresAt)
         await tx
           .updateTable('storage_locations')
           .set({ lastDownloadedAt: Date.now() })
@@ -830,10 +858,7 @@ export class Storage {
 
       // The merge could have been undone between validation and the lease read.
       const downloadUrl = leased.mergedAt
-        ? await this.adapter.createDownloadUrl(
-            `${leased.folderName}/merged`,
-            directDownloadExpiresAt,
-          )
+        ? await this.adapter.createDownloadUrl(`${leased.folderName}/merged`, urlExpiresAt)
         : defaultUrl
 
       return {
