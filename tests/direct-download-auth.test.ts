@@ -332,12 +332,19 @@ describe('token validation and direct downloads', () => {
         return `${encodeSegment({ alg: 'none' })}.${encodeSegment(claims)}.`
       },
     ],
-  ])('rejects %s with 401 and no download URL', async (_, makeToken) => {
+  ])('rejects %s with 401 on lookup, create and finalize', async (_, makeToken) => {
     const token = await makeToken()
     if (token) issuedTokens.push(token)
-    const res = await lookup(token, randomUUID())
+    const key = randomUUID()
+    const res = await lookup(token, key)
     expect(res.status).toBe(401)
     expect(res.json.signed_download_url).toBeUndefined()
+
+    const create = await twirp('CreateCacheEntry', token, { key, version: 'v1' })
+    expect(create.status).toBe(401)
+    expect(create.json.signed_upload_url).toBeUndefined()
+    const finalize = await twirp('FinalizeCacheEntryUpload', token, { key, version: 'v1' })
+    expect(finalize.status).toBe(401)
   })
 
   test(
