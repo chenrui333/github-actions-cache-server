@@ -42,6 +42,15 @@ Resource limits (all optional):
 | `MAX_CONCURRENT_MERGES`               | `16`     | Merges one process runs at once. Beyond it, restores stream the parts and a later download merges.   |
 | `DOWNLOAD_IDLE_TIMEOUT_MS`            | `300000` | Closes a download whose client has not read a byte for this long; `0` disables.                      |
 
+Direct downloads (`ENABLE_DIRECT_DOWNLOADS=true`) hand the runner a signed storage URL for merged entries instead of proxying the bytes.
+They require token validation: the server refuses to start with `SKIP_TOKEN_VALIDATION=true`, because unverified callers could then obtain signed URLs for any repository's cache.
+
+| Variable                                                 | Default | Effect                                                                                            |
+| -------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `DIRECT_DOWNLOAD_URL_TTL_SECONDS`                        | `300`   | Lifetime of a signed download URL, `1` to `3600`. Raise it only for clients that fetch URLs late. |
+| `ACTIONS_TOKEN_AUDIENCE`                                 | unset   | Comma-separated `aud` values a token must carry; unset skips the check, an empty list is refused. |
+| `UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION` | `false` | Allows direct downloads with `SKIP_TOKEN_VALIDATION=true`. Local testing only.                    |
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈

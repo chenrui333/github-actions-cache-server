@@ -6,7 +6,12 @@ import { env } from './env'
 
 export const LEASE_DURATION_MS = 2 * 60 * 1000
 export const LEASE_RENEWAL_MS = 30 * 1000
-export const DIRECT_DOWNLOAD_LEASE_DURATION_MS = 10 * 60 * 1000
+/**
+ * How long a direct-download reader lease outlives its signed URL. A download
+ * that starts just before the URL expires keeps streaming, so the lease must
+ * cover that transfer too.
+ */
+export const DIRECT_DOWNLOAD_LEASE_MARGIN_MS = 10 * 60 * 1000
 
 export async function acquireMergeLease(
   db: Kysely<Database>,
