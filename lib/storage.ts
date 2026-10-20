@@ -53,11 +53,49 @@ import { deleteStorageLocationIfUnread, noActiveReaderLease } from './storage-li
 // Entries for the same prefix — caps a pathological scan (ADR-0005).
 const MAX_DANGLING_PURGE_ATTEMPTS = 10
 
+/**
+ * `!` escapes LIKE metacharacters instead of `\`: the ESCAPE clause is a SQL
+ * literal (below), and `'!'` reads the same in every dialect, while a
+ * backslash literal depends on server settings (MySQL `NO_BACKSLASH_ESCAPES`,
+ * Postgres `standard_conforming_strings`).
+ */
+const LIKE_ESCAPE = '!'
+
 function escapeLikePattern(value: string) {
-  return value
-    .replaceAll('\\', '\\\\')
-    .replaceAll('%', String.raw`\%`)
-    .replaceAll('_', String.raw`\_`)
+  return value.replaceAll(/[!%_]/g, (char) => `${LIKE_ESCAPE}${char}`)
+}
+
+/**
+ * The most recently updated Cache Entry whose key equals `key` (`exact`) or
+ * starts with it (`prefix`) in one scope: a single probe of `matchCacheEntry`.
+ * The ESCAPE character is a literal, not a bound parameter: SQLite only turns a
+ * `LIKE 'prefix%'` into a range scan of an index when the escape is a constant,
+ * and the `key COLLATE NOCASE` index (migration `$7`) then serves the
+ * case-insensitive prefix match. Exported for query-plan tests.
+ */
+export function cacheEntryCandidateQuery(
+  db: Kysely<Database>,
+  {
+    key,
+    match,
+    version,
+    scope,
+    repoId,
+  }: { key: string; match: 'exact' | 'prefix'; version: string; scope: string; repoId: string },
+) {
+  return db
+    .selectFrom('cache_entries')
+    .where(
+      match === 'exact'
+        ? sql<boolean>`${sql.ref('key')} = ${key}`
+        : sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(key)}%`} escape ${sql.lit(LIKE_ESCAPE)}`,
+    )
+    .where('version', '=', version)
+    .where('scope', '=', scope)
+    .where('repoId', '=', repoId)
+    .orderBy('updatedAt', 'desc')
+    .limit(1)
+    .selectAll()
 }
 
 /**
@@ -703,69 +741,32 @@ export class Storage {
     repoId: string
   }) {
     const [primaryKey, ...restoreKeys] = keys
+    const find = (key: string, match: 'exact' | 'prefix', scope: string) =>
+      cacheEntryCandidateQuery(this.db, { key, match, version, scope, repoId }).executeTakeFirst()
     for (const scope of scopes) {
-      const exactPrimaryMatch = await this.db
-        .selectFrom('cache_entries')
-        .where('key', '=', primaryKey)
-        .where('version', '=', version)
-        .where('scope', '=', scope)
-        .where('repoId', '=', repoId)
-        .selectAll()
-        .executeTakeFirst()
+      const exactPrimaryMatch = await find(primaryKey, 'exact', scope)
       if (exactPrimaryMatch)
         return {
           match: exactPrimaryMatch,
           type: 'exact-primary' as const,
         }
 
-      const prefixedPrimaryMatch = await this.db
-        .selectFrom('cache_entries')
-        .where(
-          sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(primaryKey)}%`} escape ${'\\'}`,
-        )
-        .where('version', '=', version)
-        .where('scope', '=', scope)
-        .where('repoId', '=', repoId)
-        .orderBy('cache_entries.updatedAt', 'desc')
-        .selectAll()
-        .executeTakeFirst()
-
+      const prefixedPrimaryMatch = await find(primaryKey, 'prefix', scope)
       if (prefixedPrimaryMatch)
         return {
           match: prefixedPrimaryMatch,
           type: 'prefixed-primary' as const,
         }
 
-      if (restoreKeys.length === 0) continue
-
       for (const key of restoreKeys) {
-        const exactMatch = await this.db
-          .selectFrom('cache_entries')
-          .where('key', '=', key)
-          .where('version', '=', version)
-          .where('scope', '=', scope)
-          .where('repoId', '=', repoId)
-          .orderBy('updatedAt', 'desc')
-          .selectAll()
-          .executeTakeFirst()
+        const exactMatch = await find(key, 'exact', scope)
         if (exactMatch)
           return {
             match: exactMatch,
             type: 'exact-restore' as const,
           }
 
-        const prefixedMatch = await this.db
-          .selectFrom('cache_entries')
-          .where(
-            sql<boolean>`${sql.ref('key')} like ${`${escapeLikePattern(key)}%`} escape ${'\\'}`,
-          )
-          .where('version', '=', version)
-          .where('scope', '=', scope)
-          .where('repoId', '=', repoId)
-          .orderBy('updatedAt', 'desc')
-          .selectAll()
-          .executeTakeFirst()
-
+        const prefixedMatch = await find(key, 'prefix', scope)
         if (prefixedMatch)
           return {
             match: prefixedMatch,
