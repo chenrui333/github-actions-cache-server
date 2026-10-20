@@ -1,6 +1,10 @@
 import type { envDbDriverSchema, envStorageDriverSchema } from './schemas'
 import arkenv from 'arkenv'
-import { envSchema } from './schemas'
+import {
+  assertDirectDownloadsRequireTokenValidation,
+  envSchema,
+  parseActionsTokenAudience,
+} from './schemas'
 
 export const env = arkenv(envSchema, {
   env: Object.assign(
@@ -13,3 +17,10 @@ export const env = arkenv(envSchema, {
     process.env,
   ),
 })
+
+assertDirectDownloadsRequireTokenValidation(env)
+
+// GitHub-issued runtime tokens carry a deployment-specific `aud`, so pinning it
+// restricts the server to one installation's tokens. Parsed here so a bad value
+// stops startup.
+export const actionsTokenAudience = parseActionsTokenAudience(env.ACTIONS_TOKEN_AUDIENCE)
