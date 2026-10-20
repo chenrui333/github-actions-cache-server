@@ -150,6 +150,51 @@ describe('cache entry matching', () => {
     expect(Boolean(await match(repoId, ['linux-node-']))).toBe(driver !== 'postgres')
   })
 
+  test.runIf(driver === 'postgres')(
+    'postgres has no composite lookup index, so long rows still fit',
+    async () => {
+      const db = await getDatabase()
+      const { rows } = await db.executeQuery<{ indexname: string }>(
+        CompiledQuery.raw(
+          "select indexname from pg_indexes where tablename = 'cache_entries' and indexname like 'idx_cache_entries_lookup%'",
+        ),
+      )
+      expect(rows).toEqual([])
+
+      // Four incompressible ~900-byte columns: together past Postgres' B-tree
+      // entry limit (about 2.7 kB), which a composite index would reject.
+      const long = () => Array.from({ length: 25 }, () => randomUUID()).join('')
+      const [key, version, scope, repoId] = [long(), long(), long(), long()]
+      repoIds.push(repoId)
+      const locationId = randomUUID()
+      await db
+        .insertInto('storage_locations')
+        .values({
+          id: locationId,
+          folderName: locationId,
+          partCount: 1,
+          mergeStartedAt: null,
+          mergedAt: null,
+          partsDeletedAt: null,
+          lastDownloadedAt: null,
+          sizeBytes: 0,
+        })
+        .execute()
+      await db
+        .insertInto('cache_entries')
+        .values({ id: randomUUID(), key, version, scope, repoId, updatedAt: 1, locationId })
+        .execute()
+      const storage = await getStorage()
+      const result = await storage.matchCacheEntry({
+        keys: [key.slice(0, 100)],
+        version,
+        scopes: [scope],
+        repoId,
+      })
+      expect(result).toMatchObject({ type: 'prefixed-primary', match: { key } })
+    },
+  )
+
   test.runIf(driver === 'sqlite')('sqlite probes use the lookup indexes', async () => {
     const db = await getDatabase()
     const plan = async (matchKind: 'exact' | 'prefix') => {

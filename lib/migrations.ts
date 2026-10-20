@@ -223,12 +223,14 @@ export function migrations(
     },
     $7_cache_entries_lookup_indexes: {
       // Every `matchCacheEntry` probe filters on repoId, scope and version and
-      // then on the key. The single-column indexes leave the planner a poor
-      // choice (repoId or scope alone) without `sqlite_stat1`; these cover the
-      // whole predicate. MySQL is skipped: four utf8mb4 varchar columns exceed
-      // InnoDB's 3072-byte index key limit.
+      // then on the key. SQLite's single-column indexes leave the planner a
+      // poor choice (repoId or scope alone) without `sqlite_stat1`; these cover
+      // the whole predicate. SQLite only: MySQL's four utf8mb4 varchar columns
+      // exceed InnoDB's 3072-byte index key limit, and Postgres limits a B-tree
+      // entry to about a third of a page, which four unbounded text columns of
+      // an existing row could exceed and fail the migration.
       async up(db) {
-        if (driver === 'mysql') return
+        if (driver !== 'sqlite') return
         await db.schema
           .createIndex('idx_cache_entries_lookup')
           .on('cache_entries')
@@ -236,15 +238,13 @@ export function migrations(
           .execute()
         // SQLite's LIKE is case-insensitive, so only a NOCASE index on the key
         // turns the prefix match into a range scan (the LIKE optimization).
-        if (driver === 'sqlite')
-          await sql`create index ${sql.ref('idx_cache_entries_lookup_prefix')} on ${sql.table('cache_entries')} (${sql.ref('repoId')}, ${sql.ref('scope')}, ${sql.ref('version')}, ${sql.ref('key')} collate nocase)`.execute(
-            db,
-          )
+        await sql`create index ${sql.ref('idx_cache_entries_lookup_prefix')} on ${sql.table('cache_entries')} (${sql.ref('repoId')}, ${sql.ref('scope')}, ${sql.ref('version')}, ${sql.ref('key')} collate nocase)`.execute(
+          db,
+        )
       },
       async down(db) {
-        if (driver === 'mysql') return
-        if (driver === 'sqlite')
-          await dropIndex(db, 'idx_cache_entries_lookup_prefix', 'cache_entries')
+        if (driver !== 'sqlite') return
+        await dropIndex(db, 'idx_cache_entries_lookup_prefix', 'cache_entries')
         await dropIndex(db, 'idx_cache_entries_lookup', 'cache_entries')
       },
     },
