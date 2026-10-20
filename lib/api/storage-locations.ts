@@ -48,9 +48,11 @@ export const storageLocationsRouter = base
           .executeTakeFirst()
         if (!storageLocation) return
 
-        await context.db.transaction().execute(async (tx) => {
-          await tx.deleteFrom('storage_locations').where('id', '=', input.id).execute()
-          await context.storage.adapter.deleteFolder(storageLocation.folderName)
-        })
+        // Row first, then storage, like the cleanup tasks: a transaction held open
+        // across the storage delete would hold SQLite's write lock (shared by all
+        // workers) for the whole network call. If the delete fails, the folder is
+        // Orphaned Storage and the orphaned-storage sweep reclaims it.
+        await context.db.deleteFrom('storage_locations').where('id', '=', input.id).execute()
+        await context.storage.adapter.deleteFolder(storageLocation.folderName)
       }),
   })

@@ -42,6 +42,8 @@ Resource limits (all optional):
 | `MAX_CONCURRENT_MERGES`               | `16`     | Merges one process runs at once. Beyond it, restores stream the parts and a later download merges.   |
 | `DOWNLOAD_IDLE_TIMEOUT_MS`            | `300000` | Closes a download whose client has not read a byte for this long; `0` disables.                      |
 
+The image runs one worker process (`NITRO_CLUSTER_WORKERS=1`). Each worker is a Node.js process with its own event loop, so raising `NITRO_CLUSTER_WORKERS` lets one container use more CPU cores; the workers share the port. The limits above apply per worker: with 4 workers a container runs up to 4 × `MAX_CONCURRENT_MERGES` Merges and opens 4 × the S3 sockets, so divide them by the worker count to keep the container's totals. With SQLite, several workers need `DB_SQLITE_JOURNAL_MODE=wal`, which converts the database file to WAL mode (ADR-0010). With several workers, `/metrics` aggregates all of them (ADR-0011).
+
 Direct downloads (`ENABLE_DIRECT_DOWNLOADS=true`) hand the runner a signed storage URL for merged entries instead of proxying the bytes.
 They require token validation: the server refuses to start with `SKIP_TOKEN_VALIDATION=true`, because unverified callers could then obtain signed URLs for any repository's cache.
 
