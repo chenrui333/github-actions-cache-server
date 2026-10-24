@@ -78,6 +78,16 @@ export default defineEventHandler(async (event) => {
   // `sendStream` neither waits for `drain` nor notices client aborts; `pipeline` does both
   // and destroys the source, which releases its reader lease. `_handled` is an h3 v1 internal.
   event._handled = true
+  // The client can hang up while storage is still answering (a read queued behind
+  // a full socket pool). `pipeline` refuses an already-closed destination with
+  // ERR_STREAM_UNABLE_TO_PIPE without taking ownership of the source, so release
+  // the backend read here instead of leaving its socket and reader lease pinned.
+  const { res } = event.node
+  if (res.destroyed || res.closed) {
+    download.stream.destroy()
+    logger.debug(`Client aborted /download/${locationId} before storage answered`)
+    return
+  }
   // The HTTP server has no idle timeout, so a client that stops reading but keeps
   // the connection open would hold the backend read, its reader lease and, on a
   // first restore, the Merge it paces forever. Bytes moving at any rate keep the
@@ -96,20 +106,23 @@ export default defineEventHandler(async (event) => {
     body.on('data', () => idleTimer?.refresh())
   }
   try {
-    await pipeline(download.stream, event.node.res)
+    await pipeline(download.stream, res)
   } catch (err) {
+    // Every exit that did not finish the pipe must release the backend read: an
+    // unread body pins its storage connection and the reader lease it carries.
+    download.stream.destroy()
     const { code } = err as NodeJS.ErrnoException
     if (code === 'ERR_DOWNLOAD_IDLE_TIMEOUT') {
       logger.warn(`Download /download/${locationId} closed: ${(err as Error).message}`)
       return
     }
     // Client went away mid-body. Expected on cancelled jobs and parallel runners.
-    if (code === 'ERR_STREAM_PREMATURE_CLOSE') {
+    if (code === 'ERR_STREAM_PREMATURE_CLOSE' || code === 'ERR_STREAM_UNABLE_TO_PIPE') {
       logger.debug(`Client aborted /download/${locationId}: ${(err as Error).message}`)
       return
     }
     // Headers are out, so Nitro's error handler would crash with ERR_HTTP_HEADERS_SENT.
-    if (event.node.res.headersSent) {
+    if (res.headersSent) {
       logger.error(`Download stream failed for ${locationId}`, { error: err })
       return
     }
