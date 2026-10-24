@@ -1,0 +1,14 @@
+tests/direct-download-auth.test.ts
+  h_9df9c32c3f321d 335,338-339,342-347
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f9dd090f7fe6df59c5bf8c6137e9139e78268bc8",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

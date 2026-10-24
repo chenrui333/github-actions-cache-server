@@ -1,0 +1,40 @@
+README.md
+  h_9df9c32c3f321d 45-53
+docs/adr/0002-part-reader-leases-protect-active-downloads.md
+  h_9df9c32c3f321d 3
+docs/adr/0012-direct-downloads-require-verified-tokens.md
+  h_9df9c32c3f321d 1-7
+lib/env.ts
+  h_9df9c32c3f321d 3,16-17
+lib/schemas.ts
+  h_9df9c32c3f321d 68,76-77,88-113
+lib/scope.ts
+  h_9df9c32c3f321d 4,62-68,75-81,85-106,108,110-113,115-118,127,134
+lib/storage-leases.ts
+  h_9df9c32c3f321d 9-14
+lib/storage.ts
+  h_9df9c32c3f321d 43,810-815,824,836
+routes/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry.post.ts
+  h_9df9c32c3f321d 3,22
+routes/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload.ts
+  h_9df9c32c3f321d 3,22
+routes/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL.post.ts
+  h_9df9c32c3f321d 1,4,16-24,39
+tests/cleanup-lifecycle.test.ts
+  h_9df9c32c3f321d 8,414,474-477
+tests/direct-download-auth.test.ts
+  h_9df9c32c3f321d 1-398
+tests/setup.ts
+  h_9df9c32c3f321d 45-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c1f30b8601938f72851928ee8d9dce9a3b8bb237",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

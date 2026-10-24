@@ -1,0 +1,22 @@
+lib/metrics.ts
+  h_9df9c32c3f321d 1-2,4,47-273
+lib/storage.ts
+  h_9df9c32c3f321d 5,39,268,283,305,308,349,601,909-912,917-918,922-939
+routes/download/[cacheEntryId].ts
+  h_9df9c32c3f321d 5,56,61,68,74-76
+routes/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL.post.ts
+  h_9df9c32c3f321d 3,24-37
+tests/metrics.test.ts
+  h_9df9c32c3f321d 74-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7f8542057dd98c301b8541404483db24f7c87b7d",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

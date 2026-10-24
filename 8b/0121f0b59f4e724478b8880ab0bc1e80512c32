@@ -1,0 +1,14 @@
+docs/adr/0010-sqlite-wal-lets-cluster-workers-share-the-database.md
+  h_9df9c32c3f321d 8,20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8b0121f0b59f4e724478b8880ab0bc1e80512c32",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

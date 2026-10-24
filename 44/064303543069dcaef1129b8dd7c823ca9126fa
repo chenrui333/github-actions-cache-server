@@ -1,0 +1,14 @@
+tests/eager-merge.test.ts
+  h_9df9c32c3f321d 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "44064303543069dcaef1129b8dd7c823ca9126fa",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

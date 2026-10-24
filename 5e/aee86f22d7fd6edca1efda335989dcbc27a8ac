@@ -1,0 +1,16 @@
+tests/cache-entry-matching.test.ts
+  h_5dda3d103c2e5e 195-197,199-201
+tests/direct-download-auth.test.ts
+  h_5dda3d103c2e5e 169-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5eaee86f22d7fd6edca1efda335989dcbc27a8ac",
+  "prompts": {},
+  "humans": {
+    "h_5dda3d103c2e5e": {
+      "author": "Rui Chen <rchen@local>"
+    }
+  }
+}

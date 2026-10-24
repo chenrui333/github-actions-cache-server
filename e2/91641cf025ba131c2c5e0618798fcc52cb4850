@@ -1,0 +1,18 @@
+lib/migrations.ts
+  h_9df9c32c3f321d 5,224-250
+lib/storage.ts
+  h_9df9c32c3f321d 63-95,739-740,742,749,757,764
+tests/cache-entry-matching.test.ts
+  h_9df9c32c3f321d 1-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e291641cf025ba131c2c5e0618798fcc52cb4850",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+lib/metrics.ts
+  h_9df9c32c3f321d 60,64
+lib/schemas.ts
+  h_9df9c32c3f321d 77
+routes/download/[cacheEntryId].ts
+  h_9df9c32c3f321d 4,40,62-77,85-89,109
+tests/proxy-backpressure.test.ts
+  h_9df9c32c3f321d 12,100-137
+tests/setup.ts
+  h_9df9c32c3f321d 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "32dbcc2cb2db73f02698f26a841a865fc1b4acd8",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}

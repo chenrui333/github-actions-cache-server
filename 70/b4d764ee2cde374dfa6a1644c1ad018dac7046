@@ -1,0 +1,18 @@
+lib/schemas.ts
+  h_9df9c32c3f321d 8
+lib/storage.ts
+  h_9df9c32c3f321d 875
+tests/setup.ts
+  h_9df9c32c3f321d 87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "70b4d764ee2cde374dfa6a1644c1ad018dac7046",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
