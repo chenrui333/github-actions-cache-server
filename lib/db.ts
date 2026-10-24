@@ -68,6 +68,8 @@ export const uploadSchema = z.object({
   finishedPartUploadCount: z.number(),
   folderName: z.string(),
   reservationHash: z.string().nullable(),
+  // SHA-256 of the Upload capability; `null` for Uploads created without one
+  capabilityHash: z.string().nullable(),
 })
 type Upload = z.infer<typeof uploadSchema>
 

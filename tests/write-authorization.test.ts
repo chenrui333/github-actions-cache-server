@@ -65,6 +65,20 @@ function management(path: string, init: RequestInit = {}, apiKey = MANAGEMENT_AP
 }
 
 describe('write path authorization', () => {
+  test('an upload capability only authorizes its own upload', async () => {
+    const tokenA = await signToken({ repoId: 'write-auth-a' })
+    const tokenB = await signToken({ repoId: 'write-auth-b' })
+    const key = `write-auth-${crypto.randomUUID()}`
+    const urlA = new URL(await createUpload(tokenA, key))
+    const urlB = new URL(await createUpload(tokenB, key))
+
+    // A's capability on B's upload id
+    const crossed = new URL(urlB)
+    crossed.searchParams.set('sig', urlA.searchParams.get('sig')!)
+    const response = await fetch(crossed, { method: 'PUT', body: crypto.randomBytes(16) })
+    expect(response.status).toBe(403)
+  })
+
   test('another repository cannot replace or read an entry with the same key and scope', async () => {
     const tokenA = await signToken({ repoId: 'write-auth-owner' })
     const tokenB = await signToken({ repoId: 'write-auth-other' })

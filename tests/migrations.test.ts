@@ -1,4 +1,5 @@
 import type { Migration } from 'kysely/migration'
+import { createHash, randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
@@ -11,6 +12,7 @@ import pg from 'pg'
 import { match } from 'ts-pattern'
 import { afterAll, describe, expect, test } from 'vitest'
 import { env } from '~/lib/env'
+import { uploadCapabilityMatches } from '~/lib/helpers'
 import { migrateToLatest, migrations } from '~/lib/migrations'
 import { TEST_TEMP_DIR } from './setup'
 
@@ -190,6 +192,10 @@ const idleUpload = {
   finishedPartUploadCount: 0,
   startedPartUploadCount: 0,
 }
+// The capability the downstream release issued for the surviving Upload, and
+// the hash it stored for it (SHA-256, hex), as it computed them.
+const downstreamCapability = randomBytes(32).toString('hex')
+const downstreamCapabilityHash = createHash('sha256').update(downstreamCapability).digest('hex')
 
 /** A database migrated and used by the downstream release. */
 async function createDownstreamDatabase(name: string) {
@@ -223,7 +229,7 @@ async function createDownstreamDatabase(name: string) {
         id: 2,
         folderName: '2',
         createdAt: 2,
-        capabilityHash: 'b'.repeat(64),
+        capabilityHash: downstreamCapabilityHash,
       },
       {
         ...idleUpload,
@@ -274,9 +280,14 @@ describe('migrations', () => {
       .orderBy('id')
       .execute()
     expect(uploads.map((u) => [u.id, u.capabilityHash])).toEqual([
-      [2, 'b'.repeat(64)],
+      [2, downstreamCapabilityHash],
       [3, null],
     ])
+    // so the Upload URL the downstream release issued still authorizes its parts
+    expect(uploadCapabilityMatches(uploads[0]!.capabilityHash, downstreamCapability)).toBe(true)
+    expect(
+      uploadCapabilityMatches(uploads[0]!.capabilityHash, randomBytes(32).toString('hex')),
+    ).toBe(false)
     expect(uploads.every((u) => u.reservationHash?.length === 64)).toBe(true)
     expect(await db.selectFrom('cache_entries').selectAll().execute()).toEqual([
       { id: 'entry', ...reservation, updatedAt: 1, locationId: 'location' },

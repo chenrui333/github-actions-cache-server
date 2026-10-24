@@ -73,7 +73,7 @@ afterAll(async () => {
   await once(server, 'close')
 })
 
-test('query strings stay out of request, error and passthrough logs', async () => {
+test('upload capabilities stay out of request, error and passthrough logs', async () => {
   const storage = await getStorage()
   const created = await storage.createUpload({
     key: `request-logging-${randomUUID()}`,
@@ -83,12 +83,16 @@ test('query strings stay out of request, error and passthrough logs', async () =
   })
 
   const { port } = server.address() as AddressInfo
-  // Azure Blob clients send SAS-style credentials in the query.
-  const secret = randomBytes(32).toString('hex')
-  const url = `http://localhost:${port}/upload/${created.id}?sig=${secret}`
+  const url = `http://localhost:${port}/upload/${created.id}?sig=${created.capability}`
+  const forged = randomBytes(32).toString('hex')
 
   const stored = await fetch(url, { method: 'PUT', body: 'part' })
   expect(stored.status).toBe(201)
+  const rejected = await fetch(`http://localhost:${port}/upload/${created.id}?sig=${forged}`, {
+    method: 'PUT',
+    body: 'part',
+  })
+  expect(rejected.status).toBe(403)
 
   // Storage failing mid-upload (e.g. the backend is unreachable) is logged as an error.
   vi.spyOn(storage.adapter, 'uploadStream').mockRejectedValue(new Error('storage unavailable'))
@@ -100,15 +104,25 @@ test('query strings stay out of request, error and passthrough logs', async () =
   expect(failed.status).toBe(500)
   await vi.waitFor(() => expect(logs.join('\n')).toContain('> 500'))
 
-  // An unknown path falls through to the Results Passthrough.
-  const unknown = await fetch(`http://localhost:${port}/uploads/${created.id}?sig=${secret}`)
-  expect(unknown.status).toBe(204)
+  // A mistyped Upload URL falls through to the Results Passthrough.
+  const mistyped = await fetch(
+    `http://localhost:${port}/uploads/${created.id}?sig=${created.capability}`,
+  )
+  expect(mistyped.status).toBe(204)
   await vi.waitFor(() => expect(logs.join('\n')).toContain(`proxying unknown path`))
+  expect(proxyRequest).toHaveBeenCalledTimes(1)
+
+  // An Upload URL with an unsupported method is refused, not forwarded upstream.
+  for (const method of ['POST', 'HEAD', 'GET']) {
+    const response = await fetch(url, { method })
+    expect(response.status).toBe(405)
+  }
   expect(proxyRequest).toHaveBeenCalledTimes(1)
 
   const logged = logs.join('\n')
   expect(logged).toContain(`/upload/${created.id}`)
   expect(logged).toContain('storage unavailable')
   expect(logged).not.toContain('sig=')
-  expect(logged).not.toContain(secret)
+  expect(logged).not.toContain(created.capability)
+  expect(logged).not.toContain(forged)
 })

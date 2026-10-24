@@ -43,7 +43,13 @@ import { chunk } from 'remeda'
 import { match } from 'ts-pattern'
 import { getDatabase, isUniqueViolation, retryOnLockConflict } from './db'
 import { env } from './env'
-import { generateNumberId, reservationHash } from './helpers'
+import {
+  generateNumberId,
+  generateUploadCapability,
+  hashUploadCapability,
+  reservationHash,
+  uploadCapabilityMatches,
+} from './helpers'
 import { logger } from './logger'
 import { cacheMergesSkippedTotal, instrumentS3Agent, observeS3Request, trackMerge } from './metrics'
 import {
@@ -427,6 +433,21 @@ export class Storage {
   }
 
   /**
+   * Whether `capability` is the one issued with the Upload. Upload URLs are not
+   * covered by the Actions runtime token, so this is their only authorization.
+   * Unknown Uploads, Uploads created without a capability, and missing or wrong
+   * capabilities are indistinguishable.
+   */
+  async authorizeUpload(uploadId: number, capability: string | undefined) {
+    const upload = await this.db
+      .selectFrom('uploads')
+      .where('id', '=', uploadId)
+      .select('capabilityHash')
+      .executeTakeFirst()
+    return uploadCapabilityMatches(upload?.capabilityHash, capability)
+  }
+
+  /**
    * `false` when the upload does not exist, or was deleted while the part was streaming
    * (the written part is then Orphaned Storage, ADR-0001).
    */
@@ -685,6 +706,7 @@ export class Storage {
 
   async createUpload(reservation: Reservation) {
     const uploadId = generateNumberId()
+    const capability = generateUploadCapability()
     try {
       await this.db
         .insertInto('uploads')
@@ -694,6 +716,7 @@ export class Storage {
           folderName: uploadId.toString(),
           createdAt: Date.now(),
           reservationHash: reservationHash(reservation),
+          capabilityHash: hashUploadCapability(capability),
           lastPartUploadedAt: null,
           finishedPartUploadCount: 0,
           startedPartUploadCount: 0,
@@ -704,7 +727,7 @@ export class Storage {
       throw err
     }
 
-    return { id: uploadId }
+    return { id: uploadId, capability }
   }
 
   async matchCacheEntry({

@@ -39,7 +39,10 @@ export default defineEventHandler(async (event) => {
 
   return sendTwirpResponse(
     event,
-    { ok: true, signed_upload_url: `${env.API_BASE_URL}/devstoreaccount1/upload/${upload.id}` },
+    {
+      ok: true,
+      signed_upload_url: `${env.API_BASE_URL}/devstoreaccount1/upload/${upload.id}?sig=${upload.capability}`,
+    },
     TwirpMessage.CreateCacheEntryResponse,
   )
 })
