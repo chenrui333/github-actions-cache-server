@@ -1,0 +1,18 @@
+install/kubernetes/github-actions-cache-server/values.yaml
+  h_9df9c32c3f321d 29-30
+src/config.rs
+  h_9df9c32c3f321d 386-397,422,424,551-571
+src/tests/downloads.rs
+  h_9df9c32c3f321d 324-329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0ab97c2552ac74934c73e2cca7d95644cc580fa9",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
