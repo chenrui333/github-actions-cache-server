@@ -1,0 +1,38 @@
+docs/adr/0011-upload-urls-carry-a-capability.md
+  h_9df9c32c3f321d 1-11
+lib/db.ts
+  h_9df9c32c3f321d 72-73
+lib/helpers.ts
+  h_9df9c32c3f321d 2-3,33-57
+lib/migrations.ts
+  h_9df9c32c3f321d 288-307
+lib/storage.ts
+  h_9df9c32c3f321d 44-50,386-400,660,670,681
+routes/[...path].ts
+  h_9df9c32c3f321d 5-8,10-14
+routes/devstoreaccount1/upload/[uploadId].put.ts
+  h_9df9c32c3f321d 22-38,40-41,43-44,47-48,55-57
+routes/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry.post.ts
+  h_9df9c32c3f321d 42-45
+tests/proxy-backpressure.test.ts
+  h_9df9c32c3f321d 83-89
+tests/request-logging.test.ts
+  h_9df9c32c3f321d 76,86-87,91-95,107-111,115-121,126-127
+tests/upload-authorization.test.ts
+  h_9df9c32c3f321d 1-244
+tests/upload-capability-migration.test.ts
+  h_9df9c32c3f321d 1-149
+tests/upload-part.test.ts
+  h_9df9c32c3f321d 1,3-4,7-8,15-29,32-54,65-66,69,72-77,81-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a52798cd6655aa4b9623bf867878186db07e2aa1",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
