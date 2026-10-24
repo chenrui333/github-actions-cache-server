@@ -1,0 +1,14 @@
+lib/storage.ts
+  h_9df9c32c3f321d 2-3,1431-1432,1585-1597,1602,1605,1632-1641,1655,1658,1665
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "110269cedf2363ecd049b88bb2cb3d4d498655e9",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
