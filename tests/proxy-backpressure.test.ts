@@ -80,10 +80,13 @@ describe('proxy routes apply backpressure', () => {
 
     const { port } = server.address() as AddressInfo
     const serverSide = once(server, 'request') as Promise<[IncomingMessage, ServerResponse]>
-    const req = http.request(`http://localhost:${port}/upload/${created.id}`, {
-      method: 'PUT',
-      headers: { 'content-length': ENTRY_BYTES },
-    })
+    const req = http.request(
+      `http://localhost:${port}/upload/${created.id}?sig=${created.capability}`,
+      {
+        method: 'PUT',
+        headers: { 'content-length': ENTRY_BYTES },
+      },
+    )
     const response = once(req, 'response') as Promise<[IncomingMessage]>
     const chunk = Buffer.alloc(CHUNK_BYTES)
     let sent = 0
