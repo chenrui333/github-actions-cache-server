@@ -18,22 +18,26 @@ describe.skipIf(process.env.VITEST_STORAGE_DRIVER !== 's3')('s3 socket pool', ()
   })
 
   test('the configured pool size bounds the sockets used for an http endpoint', async () => {
-    s3Env.STORAGE_S3_MAX_SOCKETS = 1
+    s3Env.STORAGE_S3_MAX_SOCKETS = 2
     const storage = await Storage.fromEnv()
     const folder = `socket-pool-${randomUUID()}`
-    await storage.adapter.uploadStream(`${folder}/a`, Readable.from([Buffer.from('a')]))
-    await storage.adapter.uploadStream(`${folder}/b`, Readable.from([Buffer.from('b')]))
+    for (const name of ['a', 'b', 'c'])
+      await storage.adapter.uploadStream(`${folder}/${name}`, Readable.from([Buffer.from(name)]))
 
     try {
-      // An unread body keeps its socket: the only one in the pool.
-      const held = await storage.adapter.createDownloadStream(`${folder}/a`)
-      const second = storage.adapter.createDownloadStream(`${folder}/b`)
-      const queued = await Promise.race([second.then(() => false), sleep(1000, true)])
-      expect(queued, 'second GET queued for the only socket').toBe(true)
+      // An unread body keeps its socket: two of them fill the pool.
+      const held = [
+        await storage.adapter.createDownloadStream(`${folder}/a`),
+        await storage.adapter.createDownloadStream(`${folder}/b`),
+      ]
+      const third = storage.adapter.createDownloadStream(`${folder}/c`)
+      const queued = await Promise.race([third.then(() => false), sleep(1000, true)])
+      expect(queued, 'third GET queued for a full pool').toBe(true)
 
-      held.stream.destroy()
-      const { stream } = await second
-      expect(Buffer.concat(await stream.toArray()).toString()).toBe('b')
+      held[0]!.stream.destroy()
+      const { stream } = await third
+      expect(Buffer.concat(await stream.toArray()).toString()).toBe('c')
+      held[1]!.stream.destroy()
     } finally {
       await storage.adapter.deleteFolder(folder)
     }
