@@ -28,6 +28,14 @@ volumes:
   cache-data:
 ```
 
+## Resource limits
+
+All optional.
+
+| Variable                | Default | Effect                                                                                             |
+| ----------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `MAX_CONCURRENT_MERGES` | `16`    | Merges one process runs at once. Beyond it, restores stream the parts and a later download merges. |
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈
