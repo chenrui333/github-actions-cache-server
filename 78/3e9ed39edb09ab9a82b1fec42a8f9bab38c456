@@ -1,0 +1,16 @@
+routes/download/[locationId].ts
+  h_9df9c32c3f321d 81-90,109,111-113,120,125
+tests/download-client-gone.test.ts
+  h_9df9c32c3f321d 1-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "783e9ed39edb09ab9a82b1fec42a8f9bab38c456",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
