@@ -4,14 +4,13 @@ import { createSingletonPromise } from '@antfu/utils'
 import SQLite from 'better-sqlite3'
 import { createHooks } from 'hookable'
 import { Kysely, MysqlDialect, PostgresDialect, SqliteDialect } from 'kysely'
-import { Migrator } from 'kysely/migration'
 import { createPool } from 'mysql2'
 import pg from 'pg'
 import { match } from 'ts-pattern'
 import z from 'zod'
 import { env } from './env'
 import { logger } from './logger'
-import { migrations } from './migrations'
+import { migrateToLatest } from './migrations'
 
 // we only really use bigint for timestamps, so we can safely parse them as numbers
 pg.types.setTypeParser(20, Number)
@@ -203,17 +202,11 @@ export const getDatabase = createSingletonPromise(async () => {
   const hooks = createHooks<{
     afterMigrate: () => Promise<void>
   }>()
-  const migrator = new Migrator({
-    db,
-    provider: {
-      async getMigrations() {
-        return migrations(env.DB_DRIVER, hooks)
-      },
-    },
-  })
-  const { error, results } = await migrator.migrateToLatest()
-  if (error) {
-    logger.error('Database migration failed', error)
+  let results
+  try {
+    results = await migrateToLatest(db, env.DB_DRIVER, hooks)
+  } catch (err) {
+    logger.error('Database migration failed', err)
     // eslint-disable-next-line unicorn/no-process-exit
     process.exit(1)
   }

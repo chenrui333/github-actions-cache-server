@@ -2,16 +2,17 @@ import type { Hookable } from 'hookable'
 import type { Kysely } from 'kysely'
 import type { Migration } from 'kysely/migration'
 import type { Env } from './schemas'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { sql } from 'kysely'
+import { Migrator } from 'kysely/migration'
 import { reservationHash } from './helpers'
 import { Storage } from './storage'
 
-export function migrations(
-  driver: Env['DB_DRIVER'],
-  hooks: Hookable<{
-    afterMigrate: () => Promise<void>
-  }>,
-) {
+type MigrationHooks = Hookable<{
+  afterMigrate: () => Promise<void>
+}>
+
+export function migrations(driver: Env['DB_DRIVER'], hooks: MigrationHooks) {
   // MySQL requires `DROP INDEX ... ON table`, other drivers reject it
   async function dropIndex(db: Kysely<unknown>, index: string, table: string) {
     const query = db.schema.dropIndex(index)
@@ -286,4 +287,111 @@ export function migrations(
       },
     },
   } satisfies Record<string, Migration>
+}
+
+/**
+ * Migrations a downstream build released on top of the shared `$0`-`$6`. Their
+ * ledger rows are dropped, their schema is kept by `ensureDownstreamSchema`: an
+ * executed migration a build doesn't know makes its migrator refuse to start,
+ * so a ledger listing only this build's migrations keeps the database usable by
+ * any later release.
+ */
+const DOWNSTREAM_MIGRATIONS = ['$7_cache_entries_lookup_indexes', '$8_upload_capability_hash']
+
+async function forgetDownstreamMigrations(db: Kysely<any>) {
+  const tables = await db.introspection.getTables({ withInternalKyselyTables: true })
+  if (tables.every((table) => table.name !== 'kysely_migration')) return
+  await db.deleteFrom('kysely_migration').where('name', 'in', DOWNSTREAM_MIGRATIONS).execute()
+}
+
+async function hasColumn(db: Kysely<any>, table: string, column: string) {
+  const tables = await db.introspection.getTables()
+  return tables.some((t) => t.name === table && t.columns.some((c) => c.name === column))
+}
+
+/** Idempotent: runs on every start, after the migrations. */
+async function ensureDownstreamSchema(db: Kysely<any>, driver: Env['DB_DRIVER']) {
+  // SHA-256 of the capability carried by an Upload's URL; nullable, Uploads
+  // created without one have none.
+  if (!(await hasColumn(db, 'uploads', 'capabilityHash'))) {
+    try {
+      await db.schema.alterTable('uploads').addColumn('capabilityHash', 'varchar(64)').execute()
+    } catch (err) {
+      // another replica added it first
+      if (!(await hasColumn(db, 'uploads', 'capabilityHash'))) throw err
+    }
+  }
+
+  // Every `matchCacheEntry` probe filters on repoId, scope and version and then
+  // on the key; with `case_sensitive_like = on` this binary index also serves
+  // the prefix matches. SQLite only: MySQL's four utf8mb4 varchar columns
+  // exceed InnoDB's 3072-byte index key limit, and Postgres limits a B-tree
+  // entry to about a third of a page, which four unbounded text columns of an
+  // existing row could exceed.
+  if (driver !== 'sqlite') return
+  await db.schema
+    .createIndex('idx_cache_entries_lookup')
+    .ifNotExists()
+    .on('cache_entries')
+    .columns(['repoId', 'scope', 'version', 'key'])
+    .execute()
+  // served prefix matches while `like` ignored case
+  await db.schema.dropIndex('idx_cache_entries_lookup_prefix').ifExists().execute()
+}
+
+/** Upper bound for waiting on another process that is migrating the SQLite file. */
+const SQLITE_STARTUP_LOCK_TIMEOUT_MS = 120_000
+
+/**
+ * Runs `run` while holding SQLite's write lock so that only one process
+ * migrates: the `node-cluster` primary and its workers all migrate on start,
+ * and Kysely's SQLite migration lock is a no-op. A process that waits here
+ * sees the finished schema and has nothing left to apply. SQLite DDL is
+ * transactional, so a failed or interrupted migration leaves no partial schema.
+ */
+async function withSqliteWriteLock<T>(db: Kysely<any>, run: () => Promise<T>) {
+  const deadline = Date.now() + SQLITE_STARTUP_LOCK_TIMEOUT_MS
+  for (;;) {
+    try {
+      await sql`begin immediate`.execute(db)
+      break
+    } catch (err) {
+      // better-sqlite3 reports extended codes: SQLITE_BUSY, SQLITE_BUSY_SNAPSHOT, ...
+      const code = (err as { code?: unknown } | null)?.code
+      if (typeof code !== 'string' || !code.startsWith('SQLITE_BUSY') || Date.now() >= deadline)
+        throw err
+      await sleep(100)
+    }
+  }
+  try {
+    const result = await run()
+    await sql`commit`.execute(db)
+    return result
+  } catch (err) {
+    await sql`rollback`.execute(db)
+    throw err
+  }
+}
+
+export async function migrateToLatest(
+  db: Kysely<any>,
+  driver: Env['DB_DRIVER'],
+  hooks: MigrationHooks,
+) {
+  const migrator = new Migrator({
+    db,
+    provider: {
+      async getMigrations() {
+        return migrations(driver, hooks)
+      },
+    },
+  })
+  const migrate = async () => {
+    await forgetDownstreamMigrations(db)
+    const { error, results } = await migrator.migrateToLatest()
+    if (error) throw error
+    await ensureDownstreamSchema(db, driver)
+    return results
+  }
+  return driver === 'sqlite' ? withSqliteWriteLock(db, migrate) : migrate()
 }
