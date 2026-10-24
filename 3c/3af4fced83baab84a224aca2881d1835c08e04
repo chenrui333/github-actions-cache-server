@@ -1,0 +1,18 @@
+lib/db.ts
+  h_9df9c32c3f321d 13,205
+lib/migrations.ts
+  h_9df9c32c3f321d 6,10-15,17,19-33,244-276,340-349
+tests/migrations.test.ts
+  h_9df9c32c3f321d 1-290
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3c3af4fced83baab84a224aca2881d1835c08e04",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
