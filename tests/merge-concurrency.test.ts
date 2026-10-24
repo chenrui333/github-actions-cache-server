@@ -4,6 +4,7 @@ import { Readable } from 'node:stream'
 import { afterEach, describe, expect, test } from 'vitest'
 import { getDatabase } from '~/lib/db'
 import { env } from '~/lib/env'
+import { cacheMergesSkippedTotal } from '~/lib/metrics'
 import { Storage } from '~/lib/storage'
 
 const scope = { version: 'v1', scope: 'refs/heads/main', repoId: '123' }
@@ -64,8 +65,13 @@ describe('merge concurrency limit', () => {
     try {
       // The first restore's Merge is paced by its unread stream, so it still
       // holds the only slot when the second restore starts.
+      // `get()` hands out live value objects, so read the number right away.
+      const before = await cacheMergesSkippedTotal.get()
+      const skippedBefore = before.values[0]?.value ?? 0
       const firstStream = await download(storage, first.locationId)
       const secondStream = await download(storage, second.locationId)
+      const after = await cacheMergesSkippedTotal.get()
+      expect((after.values[0]?.value ?? 0) - skippedBefore, 'merges skipped').toBe(1)
       expect(await sha256(secondStream)).toBe(expected)
       expect(await sha256(firstStream)).toBe(expected)
       await storage.waitForOngoingMerges()

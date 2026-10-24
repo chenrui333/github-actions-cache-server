@@ -71,5 +71,57 @@ describe('prometheus metrics', () => {
     // Scrape-time gauge: present and non-negative (collect() ran without throwing).
     expect(after).toContain('cache_storage_bytes')
     expect(readCounter(after, 'cache_storage_bytes')).toBeGreaterThanOrEqual(0)
+
+    // Every series the dashboards read is exposed, with or without observations.
+    for (const name of [
+      'cache_lookup_duration_seconds',
+      'cache_downloads_total',
+      'cache_merges_total',
+      'cache_merges_skipped_total',
+      'cache_merge_duration_seconds',
+      'cache_merges_in_progress',
+      'cache_merge_oldest_age_seconds',
+      'cache_leases',
+      's3_http_sockets',
+      's3_http_queued_requests',
+      's3_http_max_sockets',
+      's3_socket_wait_seconds',
+      's3_requests_total',
+      's3_request_duration_seconds',
+      's3_request_retries_total',
+    ])
+      expect(after, name).toMatch(new RegExp(`^# TYPE ${name} `, 'm'))
+
+    for (const series of [
+      'cache_lookup_duration_seconds_count{result="hit"}',
+      'cache_lookup_duration_seconds_count{result="miss"}',
+      'cache_downloads_total{result="completed"}',
+    ])
+      expect(readCounter(after, series), series).toBeGreaterThan(readCounter(before, series))
+    expect(after).toContain('cache_downloads_total{result="idle_timeout"}')
+    expect(after).toContain('cache_leases{type="merge",state="active"}')
+    expect(after).toContain('cache_leases{type="reader",state="expired"}')
+
+    // The first restore of an unmerged entry runs a streaming Merge in the background.
+    const merged = 'cache_merges_total{kind="stream",result="success"}'
+    await expect
+      .poll(async () => readCounter(await scrape(), merged), { timeout: 10_000 })
+      .toBeGreaterThan(readCounter(before, merged))
+
+    if (process.env.VITEST_STORAGE_DRIVER === 's3') {
+      const headOk = 's3_requests_total{command="HeadObject",outcome="ok"}'
+      expect(readCounter(after, headOk)).toBeGreaterThan(readCounter(before, headOk))
+      // Upload, restore and lookup each went through their own configured,
+      // instrumented pool (the test endpoint is http://, so this also proves the
+      // SDK's default agent is not used).
+      for (const pool of ['writes', 'reads', 'control']) {
+        const pooled =
+          readCounter(after, `s3_http_sockets{pool="${pool}",state="active"}`) +
+          readCounter(after, `s3_http_sockets{pool="${pool}",state="idle"}`)
+        expect(pooled, `${pool} sockets`).toBeGreaterThan(0)
+      }
+      expect(readCounter(after, 's3_http_max_sockets{pool="reads"}')).toBe(50)
+      expect(readCounter(after, 's3_http_max_sockets{pool="control"}')).toBe(16)
+    }
   })
 })

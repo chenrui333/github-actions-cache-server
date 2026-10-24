@@ -3,6 +3,7 @@ import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
 import { env } from '~/lib/env'
 import { logger } from '~/lib/logger'
+import { cacheDownloadsTotal } from '~/lib/metrics'
 import { getStorage, RangeNotSatisfiableError } from '~/lib/storage'
 
 const pathParamsSchema = z.object({
@@ -44,12 +45,16 @@ export default defineEventHandler(async (event) => {
   try {
     download = await storage.download(locationId, range)
   } catch (err) {
-    if (!(err instanceof RangeNotSatisfiableError)) throw err
+    if (!(err instanceof RangeNotSatisfiableError)) {
+      cacheDownloadsTotal.inc({ result: 'error' })
+      throw err
+    }
     // An empty entry has no satisfiable range. The filesystem and GCS adapters raise
     // for any Range on one and Azure for any start past 0, while RustFS (S3) answers
     // `bytes=0-` with an empty 200. Ignore Range on empty entries (RFC 9110 §14.2) so
     // the response does not depend on the storage driver.
     if (err.size === 0) {
+      cacheDownloadsTotal.inc({ result: 'completed' })
       setHeader(event, 'content-length', 0)
       return send(event)
     }
@@ -57,11 +62,13 @@ export default defineEventHandler(async (event) => {
     if (err.size !== undefined) setHeader(event, 'content-range', `bytes */${err.size}`)
     return send(event)
   }
-  if (!download)
+  if (!download) {
+    cacheDownloadsTotal.inc({ result: 'not_found' })
     throw createError({
       statusCode: 404,
       message: 'Cache file not found',
     })
+  }
 
   if (download.range && download.size !== undefined) {
     setResponseStatus(event, 206)
@@ -85,6 +92,7 @@ export default defineEventHandler(async (event) => {
   const { res } = event.node
   if (res.destroyed || res.closed) {
     download.stream.destroy()
+    cacheDownloadsTotal.inc({ result: 'client_gone' })
     logger.debug(`Client aborted /download/${locationId} before storage answered`)
     return
   }
@@ -107,20 +115,24 @@ export default defineEventHandler(async (event) => {
   }
   try {
     await pipeline(download.stream, res)
+    cacheDownloadsTotal.inc({ result: 'completed' })
   } catch (err) {
     // Every exit that did not finish the pipe must release the backend read: an
     // unread body pins its storage connection and the reader lease it carries.
     download.stream.destroy()
     const { code } = err as NodeJS.ErrnoException
     if (code === 'ERR_DOWNLOAD_IDLE_TIMEOUT') {
+      cacheDownloadsTotal.inc({ result: 'idle_timeout' })
       logger.warn(`Download /download/${locationId} closed: ${(err as Error).message}`)
       return
     }
     // Client went away mid-body. Expected on cancelled jobs and parallel runners.
     if (code === 'ERR_STREAM_PREMATURE_CLOSE' || code === 'ERR_STREAM_UNABLE_TO_PIPE') {
+      cacheDownloadsTotal.inc({ result: 'client_gone' })
       logger.debug(`Client aborted /download/${locationId}: ${(err as Error).message}`)
       return
     }
+    cacheDownloadsTotal.inc({ result: 'error' })
     // Headers are out, so Nitro's error handler would crash with ERR_HTTP_HEADERS_SENT.
     if (res.headersSent) {
       logger.error(`Download stream failed for ${locationId}`, { error: err })
