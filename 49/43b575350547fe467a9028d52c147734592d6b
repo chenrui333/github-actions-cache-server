@@ -1,0 +1,22 @@
+lib/helpers.ts
+  h_9df9c32c3f321d 1,11-18
+plugins/request-logging.ts
+  h_9df9c32c3f321d 1-27
+routes/[...path].ts
+  h_9df9c32c3f321d 2,6
+routes/devstoreaccount1/upload/[uploadId].put.ts
+  h_9df9c32c3f321d 6,39-50
+tests/request-logging.test.ts
+  h_9df9c32c3f321d 1-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4943b575350547fe467a9028d52c147734592d6b",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
