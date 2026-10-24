@@ -208,8 +208,6 @@ export class Storage {
 
     responseStream.end()
     mergerStream.end()
-
-    await globalThis.gc?.()
   }
 
   private async *streamParts(location: StorageLocation) {
@@ -221,8 +219,6 @@ export class Storage {
       )
 
       for await (const chunk of partStream) yield chunk
-
-      await globalThis.gc?.()
     }
   }
 
