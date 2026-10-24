@@ -1,0 +1,24 @@
+README.md
+  h_9df9c32c3f321d 35-39
+lib/schemas.ts
+  h_9df9c32c3f321d 9-10
+lib/storage.ts
+  h_9df9c32c3f321d 903-909,913-944,948,960,963,975-977,982,993,997,1005-1006,1014,1037,1053,1079,1106,1134,1190
+tests/merge-socket-pool.test.ts
+  h_9df9c32c3f321d 1-92
+tests/s3-socket-pool.test.ts
+  h_9df9c32c3f321d 41-58
+tests/setup.ts
+  h_9df9c32c3f321d 89-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fe9af9a54a84d1613e5c07029ada740108de69c6",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
