@@ -1,0 +1,42 @@
+name: Patch image
+
+# Builds a multi-arch OCI image archive for each `patch-<version>` tag
+# (`patch-9.9.0-backpressure.1` -> artifact `image-9.9.0-backpressure.1`).
+# The ghcr.io package predates this repo link, so GITHUB_TOKEN cannot push to it;
+# publish the archive with `crane push --index <dir> ghcr.io/<owner>/github-actions-cache-server:<tag>`.
+# Kept separate from release.yml, which only releases from dev and moves `latest`.
+on:
+  push:
+    tags:
+      - 'patch-*'
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Image tag
+        id: tag
+        run: echo "TAG=${GITHUB_REF_NAME#patch-}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar,tar=true
+          build-args: |
+            BUILD_HASH=${{ github.sha }}
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: image-${{ steps.tag.outputs.TAG }}
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 7
