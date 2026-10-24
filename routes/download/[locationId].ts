@@ -1,6 +1,7 @@
 import type { RangeRequest } from '~/lib/storage'
 import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
+import { env } from '~/lib/env'
 import { logger } from '~/lib/logger'
 import { getStorage, RangeNotSatisfiableError } from '~/lib/storage'
 
@@ -77,11 +78,33 @@ export default defineEventHandler(async (event) => {
   // `sendStream` neither waits for `drain` nor notices client aborts; `pipeline` does both
   // and destroys the source, which releases its reader lease. `_handled` is an h3 v1 internal.
   event._handled = true
+  // The HTTP server has no idle timeout, so a client that stops reading but keeps
+  // the connection open would hold the backend read, its reader lease and, on a
+  // first restore, the Merge it paces forever. Bytes moving at any rate keep the
+  // download alive.
+  let idleTimer: NodeJS.Timeout | undefined
+  if (env.DOWNLOAD_IDLE_TIMEOUT_MS > 0) {
+    const body = download.stream
+    idleTimer = setTimeout(() => {
+      body.destroy(
+        Object.assign(new Error(`No bytes sent for ${env.DOWNLOAD_IDLE_TIMEOUT_MS} ms`), {
+          code: 'ERR_DOWNLOAD_IDLE_TIMEOUT',
+        }),
+      )
+    }, env.DOWNLOAD_IDLE_TIMEOUT_MS)
+    idleTimer.unref()
+    body.on('data', () => idleTimer?.refresh())
+  }
   try {
     await pipeline(download.stream, event.node.res)
   } catch (err) {
+    const { code } = err as NodeJS.ErrnoException
+    if (code === 'ERR_DOWNLOAD_IDLE_TIMEOUT') {
+      logger.warn(`Download /download/${locationId} closed: ${(err as Error).message}`)
+      return
+    }
     // Client went away mid-body. Expected on cancelled jobs and parallel runners.
-    if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
+    if (code === 'ERR_STREAM_PREMATURE_CLOSE') {
       logger.debug(`Client aborted /download/${locationId}: ${(err as Error).message}`)
       return
     }
@@ -91,5 +114,7 @@ export default defineEventHandler(async (event) => {
       return
     }
     throw err
+  } finally {
+    clearTimeout(idleTimer)
   }
 })
