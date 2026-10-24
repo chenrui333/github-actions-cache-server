@@ -1,0 +1,14 @@
+lib/db.ts
+  h_9df9c32c3f321d 144-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "404f7f6094d72033700e3267cc4317a8e9653c53",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
