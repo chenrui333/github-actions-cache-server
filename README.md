@@ -28,6 +28,14 @@ volumes:
   cache-data:
 ```
 
+## Resource limits
+
+All optional.
+
+| Variable                   | Default  | Effect                                                                          |
+| -------------------------- | -------- | ------------------------------------------------------------------------------- |
+| `DOWNLOAD_IDLE_TIMEOUT_MS` | `300000` | Closes a download whose client has not read a byte for this long; `0` disables. |
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈
