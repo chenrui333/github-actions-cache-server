@@ -1,0 +1,22 @@
+README.md
+  h_9df9c32c3f321d 35-41
+lib/schemas.ts
+  h_9df9c32c3f321d 91
+routes/download/[locationId].ts
+  h_9df9c32c3f321d 4,81-97,101-105,107,117-118
+tests/proxy-backpressure.test.ts
+  h_9df9c32c3f321d 12-13,172-279
+tests/setup.ts
+  h_9df9c32c3f321d 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2dfddcfbca13d743e5268e43036e9409caf188e8",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
