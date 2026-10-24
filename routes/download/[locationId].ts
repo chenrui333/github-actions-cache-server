@@ -1,7 +1,9 @@
 import type { RangeRequest } from '~/lib/storage'
 import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
+import { env } from '~/lib/env'
 import { logger } from '~/lib/logger'
+import { cacheDownloadsTotal } from '~/lib/metrics'
 import { getStorage, RangeNotSatisfiableError } from '~/lib/storage'
 
 const pathParamsSchema = z.object({
@@ -43,12 +45,16 @@ export default defineEventHandler(async (event) => {
   try {
     download = await storage.download(locationId, range)
   } catch (err) {
-    if (!(err instanceof RangeNotSatisfiableError)) throw err
+    if (!(err instanceof RangeNotSatisfiableError)) {
+      cacheDownloadsTotal.inc({ result: 'error' })
+      throw err
+    }
     // An empty entry has no satisfiable range. The filesystem and GCS adapters raise
     // for any Range on one and Azure for any start past 0, while RustFS (S3) answers
     // `bytes=0-` with an empty 200. Ignore Range on empty entries (RFC 9110 §14.2) so
     // the response does not depend on the storage driver.
     if (err.size === 0) {
+      cacheDownloadsTotal.inc({ result: 'completed' })
       setHeader(event, 'content-length', 0)
       return send(event)
     }
@@ -56,11 +62,13 @@ export default defineEventHandler(async (event) => {
     if (err.size !== undefined) setHeader(event, 'content-range', `bytes */${err.size}`)
     return send(event)
   }
-  if (!download)
+  if (!download) {
+    cacheDownloadsTotal.inc({ result: 'not_found' })
     throw createError({
       statusCode: 404,
       message: 'Cache file not found',
     })
+  }
 
   if (download.range && download.size !== undefined) {
     setResponseStatus(event, 206)
@@ -77,19 +85,61 @@ export default defineEventHandler(async (event) => {
   // `sendStream` neither waits for `drain` nor notices client aborts; `pipeline` does both
   // and destroys the source, which releases its reader lease. `_handled` is an h3 v1 internal.
   event._handled = true
+  // The client can hang up while storage is still answering (a read queued behind
+  // a full socket pool). `pipeline` refuses an already-closed destination with
+  // ERR_STREAM_UNABLE_TO_PIPE without taking ownership of the source, so release
+  // the backend read here instead of leaving its socket and reader lease pinned.
+  const { res } = event.node
+  if (res.destroyed || res.closed) {
+    download.stream.destroy()
+    cacheDownloadsTotal.inc({ result: 'client_gone' })
+    logger.debug(`Client aborted /download/${locationId} before storage answered`)
+    return
+  }
+  // The HTTP server has no idle timeout, so a client that stops reading but keeps
+  // the connection open would hold the backend read, its reader lease and, on a
+  // first restore, the Merge it paces forever. Bytes moving at any rate keep the
+  // download alive.
+  let idleTimer: NodeJS.Timeout | undefined
+  if (env.DOWNLOAD_IDLE_TIMEOUT_MS > 0) {
+    const body = download.stream
+    idleTimer = setTimeout(() => {
+      body.destroy(
+        Object.assign(new Error(`No bytes sent for ${env.DOWNLOAD_IDLE_TIMEOUT_MS} ms`), {
+          code: 'ERR_DOWNLOAD_IDLE_TIMEOUT',
+        }),
+      )
+    }, env.DOWNLOAD_IDLE_TIMEOUT_MS)
+    idleTimer.unref()
+    body.on('data', () => idleTimer?.refresh())
+  }
   try {
-    await pipeline(download.stream, event.node.res)
+    await pipeline(download.stream, res)
+    cacheDownloadsTotal.inc({ result: 'completed' })
   } catch (err) {
+    // Every exit that did not finish the pipe must release the backend read: an
+    // unread body pins its storage connection and the reader lease it carries.
+    download.stream.destroy()
+    const { code } = err as NodeJS.ErrnoException
+    if (code === 'ERR_DOWNLOAD_IDLE_TIMEOUT') {
+      cacheDownloadsTotal.inc({ result: 'idle_timeout' })
+      logger.warn(`Download /download/${locationId} closed: ${(err as Error).message}`)
+      return
+    }
     // Client went away mid-body. Expected on cancelled jobs and parallel runners.
-    if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
+    if (code === 'ERR_STREAM_PREMATURE_CLOSE' || code === 'ERR_STREAM_UNABLE_TO_PIPE') {
+      cacheDownloadsTotal.inc({ result: 'client_gone' })
       logger.debug(`Client aborted /download/${locationId}: ${(err as Error).message}`)
       return
     }
+    cacheDownloadsTotal.inc({ result: 'error' })
     // Headers are out, so Nitro's error handler would crash with ERR_HTTP_HEADERS_SENT.
-    if (event.node.res.headersSent) {
+    if (res.headersSent) {
       logger.error(`Download stream failed for ${locationId}`, { error: err })
       return
     }
     throw err
+  } finally {
+    clearTimeout(idleTimer)
   }
 })

@@ -1,14 +1,16 @@
 /* eslint-disable ts/method-signature-style */
 import type { ContainerClient } from '@azure/storage-blob'
 import type { Kysely } from 'kysely'
+import type { Writable } from 'node:stream'
 import type { Database, StorageLocation } from './db'
 import type { Reservation } from './helpers'
+import type { MergeKind, S3Pool } from './metrics'
 import type { Env } from './schemas'
 import { randomUUID } from 'node:crypto'
-import { once } from 'node:events'
 import { createReadStream, createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
-import { Agent } from 'node:https'
+import { Agent as HttpAgent } from 'node:http'
+import { Agent as HttpsAgent } from 'node:https'
 import path from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -43,6 +45,7 @@ import { getDatabase, isUniqueViolation, retryOnLockConflict } from './db'
 import { env } from './env'
 import { generateNumberId, reservationHash } from './helpers'
 import { logger } from './logger'
+import { cacheMergesSkippedTotal, instrumentS3Agent, observeS3Request, trackMerge } from './metrics'
 import {
   acquireMergeLease,
   createReaderLease,
@@ -64,6 +67,23 @@ function escapeLikePattern(value: string) {
     .replaceAll('\\', '\\\\')
     .replaceAll('%', String.raw`\%`)
     .replaceAll('_', String.raw`\_`)
+}
+
+/**
+ * Resolves once `stream` wants more data or is closed. A destroyed stream emits
+ * no 'drain', and no 'error' when destroyed without one, so waiting on 'drain'
+ * alone hangs forever once its reader is gone.
+ */
+function drainOrClose(stream: Writable) {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  const done = () => {
+    stream.off('drain', done)
+    stream.off('close', done)
+    resolve()
+  }
+  stream.on('drain', done)
+  stream.on('close', done)
+  return promise
 }
 
 export class ObjectNotFoundError extends Error {
@@ -130,6 +150,7 @@ export class Storage {
 
   private db
   private mergeStreamPromises = new Set<Promise<void>>()
+  private activeMerges = 0
   adapter
 
   private constructor({ db, adapter }: { adapter: StorageAdapter; db: Kysely<Database> }) {
@@ -198,16 +219,25 @@ export class Storage {
   ) {
     if (location.partsDeletedAt) throw new Error('No parts to feed')
 
+    // Either sink can be destroyed mid-download: the route destroys the response
+    // when the client hangs up, and a failed merge upload destroys the merger.
+    // Waiting on a destroyed sink's 'drain' would park the pump forever, pinning
+    // the current part's backend read and renewing the merge lease. Keep feeding
+    // whichever sink is still open, and stop reading once both are gone.
+    const sinks = [responseStream, mergerStream]
     for await (const chunk of this.streamParts(location)) {
-      // attach both drain listeners simultaneously to prevent a race condition where the second stream being faster hangs forever
+      // attach every drain wait before awaiting any, so a faster sink's 'drain' is never missed
       const drains = []
-      if (!responseStream.write(chunk)) drains.push(once(responseStream, 'drain'))
-      if (!mergerStream.write(chunk)) drains.push(once(mergerStream, 'drain'))
+      for (const sink of sinks) {
+        if (sink.destroyed) continue
+        if (!sink.write(chunk) && !sink.destroyed) drains.push(drainOrClose(sink))
+      }
       await Promise.all(drains)
+      // Leaving the loop makes `streamParts` destroy the current part stream.
+      if (sinks.every((sink) => sink.destroyed)) return
     }
 
-    responseStream.end()
-    mergerStream.end()
+    for (const sink of sinks) if (!sink.destroyed) sink.end()
 
     await globalThis.gc?.()
   }
@@ -281,25 +311,45 @@ export class Storage {
   /**
    * Runs a Merge under a Merge Lease. `write` produces `${folderName}/merged`;
    * a lease-fenced transaction then marks the Merge complete. Returns false
-   * when another worker holds the lease. Writing straight to the final object
-   * is safe (ADR-0004). The returned promise never rejects: failures are logged
-   * and the merge state rolled back.
+   * when another worker holds the lease or this process already runs
+   * MAX_CONCURRENT_MERGES Merges; a skipped Merge is retried by a later
+   * download. Writing straight to the final object is safe (ADR-0004). The
+   * returned promise never rejects: failures are logged and the merge state
+   * rolled back.
    */
-  private async startMerge(location: StorageLocation, write: () => Promise<void>) {
-    const mergeToken = await acquireMergeLease(this.db, location.id)
-    if (!mergeToken) return false
-
-    await this.db
-      .updateTable('storage_locations')
-      .set({ mergeStartedAt: Date.now() })
-      .where('id', '=', location.id)
-      .execute()
+  private async startMerge(location: StorageLocation, kind: MergeKind, write: () => Promise<void>) {
+    // Each Merge holds storage connections and buffers for its whole duration;
+    // unbounded, a burst of first restores or finalizes exhausts them.
+    if (this.activeMerges >= env.MAX_CONCURRENT_MERGES) {
+      cacheMergesSkippedTotal.inc()
+      return false
+    }
+    // Reserve the slot before the first await so concurrent callers cannot overshoot it.
+    this.activeMerges++
+    let mergeToken: string | undefined
+    try {
+      mergeToken = await acquireMergeLease(this.db, location.id)
+      if (mergeToken)
+        await this.db
+          .updateTable('storage_locations')
+          .set({ mergeStartedAt: Date.now() })
+          .where('id', '=', location.id)
+          .execute()
+    } catch (err) {
+      this.activeMerges--
+      throw err
+    }
+    if (!mergeToken) {
+      this.activeMerges--
+      return false
+    }
 
     const renewalTimer = setInterval(() => {
       void renewMergeLease(this.db, location.id, mergeToken)
     }, LEASE_RENEWAL_MS)
     renewalTimer.unref()
 
+    const finishMerge = trackMerge(kind)
     const mergePromise = write()
       .then(async () => {
         // The merged object is already written, so losing a deadlock here must
@@ -321,8 +371,10 @@ export class Storage {
               .execute()
           }),
         )
+        finishMerge('success')
       })
       .catch(async (err) => {
+        finishMerge('failure')
         logger.error(`Merge failed for storage location ${location.id}`, { error: err })
         await this.db
           .updateTable('storage_locations')
@@ -341,6 +393,7 @@ export class Storage {
       })
       .finally(async () => {
         clearInterval(renewalTimer)
+        this.activeMerges--
         await releaseMergeLease(this.db, location.id, mergeToken)
       })
     this.mergeStreamPromises.add(mergePromise)
@@ -363,7 +416,7 @@ export class Storage {
           bytes <= compose.maxPartBytes &&
           (index === partSizes.length - 1 || bytes >= compose.minPartBytes),
       )
-    await this.startMerge(location, () =>
+    await this.startMerge(location, composable ? 'compose' : 'stream', () =>
       composable
         ? compose.run(location.folderName, location.partCount)
         : this.adapter.uploadStream(
@@ -601,7 +654,7 @@ export class Storage {
 
       const responseStream = new PassThrough()
       const mergerStream = new PassThrough()
-      const merge = await this.startMerge(storageLocation, () =>
+      const merge = await this.startMerge(storageLocation, 'stream', () =>
         this.adapter
           .uploadStream(`${storageLocation.folderName}/merged`, mergerStream)
           .catch((err) => {
@@ -877,25 +930,76 @@ function accumulateFolder(
   folders.set(folderName, existing)
 }
 
+/** reads: GetObject; writes: uploads, multipart and part copies; control: HEAD, LIST, DELETE. */
+interface S3Clients {
+  reads: S3Client
+  writes: S3Client
+  control: S3Client
+}
+
 class S3Adapter implements StorageAdapter {
   static async fromEnv(env: Extract<Env, { STORAGE_DRIVER: 's3' }>) {
     const bucket = env.STORAGE_S3_BUCKET
-    const agent = new Agent({
-      keepAlive: true,
-      maxSockets: 50,
-      keepAliveMsecs: 1000,
-    })
-    const s3 = new S3Client({
-      forcePathStyle: true,
-      region: env.AWS_REGION,
-      requestHandler: new NodeHttpHandler({
-        httpsAgent: agent,
-        socketTimeout: env.STORAGE_S3_SOCKET_TIMEOUT_MS,
-      }),
-    })
+    // One socket pool per kind of work. A streaming Merge holds a part GetObject
+    // open (paused by backpressure) while it waits for a socket to upload the
+    // merged object; in one shared pool, as many concurrent Merges as sockets
+    // deadlock it, and the HeadObject of every cache lookup queues behind all
+    // bulk transfers. Write holders never wait on reads and control requests
+    // hold a socket only briefly, so no wait cycle can span pools.
+    const createClient = (pool: S3Pool, maxSockets: number, connectionTimeout?: number) => {
+      // Both protocols get the configured pool: NodeHttpHandler picks the agent by
+      // endpoint scheme, and an http:// endpoint (MinIO, RustFS, an in-cluster
+      // gateway) would otherwise fall back to the SDK's default agent and ignore
+      // the configured size.
+      const agentOptions = { keepAlive: true, maxSockets, keepAliveMsecs: 1000 }
+      const httpAgent = new HttpAgent(agentOptions)
+      const httpsAgent = new HttpsAgent(agentOptions)
+      instrumentS3Agent(pool, httpAgent)
+      instrumentS3Agent(pool, httpsAgent)
+      const client = new S3Client({
+        forcePathStyle: true,
+        region: env.AWS_REGION,
+        requestHandler: new NodeHttpHandler({
+          httpAgent,
+          httpsAgent,
+          socketTimeout: env.STORAGE_S3_SOCKET_TIMEOUT_MS,
+          connectionTimeout,
+        }),
+      })
+      // `initialize` wraps the whole command (retries, socket wait, signing), so the
+      // duration is what callers wait for; a GetObject settles at response headers.
+      client.middlewareStack.add(
+        (next, context) => async (args) => {
+          const startedAt = performance.now()
+          try {
+            const result = await next(args)
+            const { $metadata } = result.output as { $metadata?: { attempts?: number } }
+            observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts)
+            return result
+          } catch (err) {
+            const { $metadata } = err as { $metadata?: { attempts?: number } }
+            observeS3Request(context.commandName ?? 'unknown', startedAt, $metadata?.attempts, err)
+            throw err
+          }
+        },
+        { step: 'initialize', name: 'cacheServerMetrics' },
+      )
+      return client
+    }
+    const clients: S3Clients = {
+      reads: createClient('reads', env.STORAGE_S3_MAX_SOCKETS),
+      writes: createClient('writes', env.STORAGE_S3_MAX_SOCKETS),
+      // Bounds the wait for a socket plus the connect, so a starved lookup fails
+      // instead of hanging; cleared once a kept-alive socket is assigned.
+      control: createClient(
+        'control',
+        env.STORAGE_S3_CONTROL_MAX_SOCKETS,
+        env.STORAGE_S3_CONTROL_QUEUE_TIMEOUT_MS,
+      ),
+    }
 
     try {
-      await s3.send(
+      await clients.control.send(
         new HeadBucketCommand({
           Bucket: bucket,
         }),
@@ -907,10 +1011,10 @@ class S3Adapter implements StorageAdapter {
       throw err
     }
 
-    return new S3Adapter({ s3, bucket })
+    return new S3Adapter({ clients, bucket })
   }
 
-  private s3
+  private clients
   private bucket
   private keyPrefix = 'gh-actions-cache'
 
@@ -922,12 +1026,14 @@ class S3Adapter implements StorageAdapter {
     run: async (folderName: string, partCount: number) => {
       const Bucket = this.bucket
       const Key = `${this.keyPrefix}/${folderName}/merged`
-      const { UploadId } = await this.s3.send(new CreateMultipartUploadCommand({ Bucket, Key }))
+      const { UploadId } = await this.clients.writes.send(
+        new CreateMultipartUploadCommand({ Bucket, Key }),
+      )
       if (!UploadId) throw new Error('S3 did not return an UploadId')
       try {
         const Parts = []
         for (let PartNumber = 1; PartNumber <= partCount; PartNumber++) {
-          const copy = await this.s3.send(
+          const copy = await this.clients.writes.send(
             new UploadPartCopyCommand({
               Bucket,
               Key,
@@ -938,11 +1044,11 @@ class S3Adapter implements StorageAdapter {
           )
           Parts.push({ PartNumber, ETag: copy.CopyPartResult?.ETag })
         }
-        await this.s3.send(
+        await this.clients.writes.send(
           new CompleteMultipartUploadCommand({ Bucket, Key, UploadId, MultipartUpload: { Parts } }),
         )
       } catch (err) {
-        await this.s3
+        await this.clients.writes
           .send(new AbortMultipartUploadCommand({ Bucket, Key, UploadId }))
           .catch(() => {})
         throw err
@@ -950,8 +1056,8 @@ class S3Adapter implements StorageAdapter {
     },
   }
 
-  constructor({ bucket, s3 }: { s3: S3Client; bucket: string }) {
-    this.s3 = s3
+  constructor({ bucket, clients }: { clients: S3Clients; bucket: string }) {
+    this.clients = clients
     this.bucket = bucket
   }
 
@@ -959,7 +1065,7 @@ class S3Adapter implements StorageAdapter {
     let continuationToken: string | undefined
 
     do {
-      const response = await this.s3.send(
+      const response = await this.clients.control.send(
         new ListObjectsV2Command({
           Bucket: this.bucket,
           Prefix: prefix,
@@ -982,7 +1088,7 @@ class S3Adapter implements StorageAdapter {
   private async deleteByPrefix(prefix: string) {
     const deleted = { objects: 0, bytes: 0 }
     while (true) {
-      const listResponse = await this.s3.send(
+      const listResponse = await this.clients.control.send(
         new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix }),
       )
       if (!listResponse.Contents || listResponse.Contents.length === 0) break
@@ -998,7 +1104,7 @@ class S3Adapter implements StorageAdapter {
           listResponse.Contents.filter((obj): obj is { Key: string } => !!obj.Key),
           1000,
         ).map((chunkedObjects) =>
-          this.s3.send(
+          this.clients.control.send(
             new DeleteObjectsCommand({
               Bucket: this.bucket,
               Delete: {
@@ -1024,7 +1130,7 @@ class S3Adapter implements StorageAdapter {
 
   async createDownloadStream(objectName: string, range?: RangeRequest): Promise<DownloadStream> {
     try {
-      const response = await this.s3.send(
+      const response = await this.clients.reads.send(
         new GetObjectCommand({
           Bucket: this.bucket,
           Key: `${this.keyPrefix}/${objectName}`,
@@ -1051,7 +1157,7 @@ class S3Adapter implements StorageAdapter {
 
   async objectExists(objectName: string) {
     try {
-      await this.s3.send(
+      await this.clients.control.send(
         new HeadObjectCommand({
           Bucket: this.bucket,
           Key: `${this.keyPrefix}/${objectName}`,
@@ -1079,7 +1185,7 @@ class S3Adapter implements StorageAdapter {
 
   async uploadStream(objectName: string, iterator: AsyncIterable<Uint8Array>) {
     await new S3Upload({
-      client: this.s3,
+      client: this.clients.writes,
       params: {
         Bucket: this.bucket,
         Key: `${this.keyPrefix}/${objectName}`,
@@ -1135,7 +1241,7 @@ class S3Adapter implements StorageAdapter {
 
   async createDownloadUrl(objectName: string, expiresAt: number) {
     return getSignedUrl(
-      this.s3,
+      this.clients.reads,
       new GetObjectCommand({
         Bucket: this.bucket,
         Key: `${this.keyPrefix}/${objectName}`,
