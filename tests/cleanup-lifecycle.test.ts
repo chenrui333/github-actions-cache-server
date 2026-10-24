@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
 import { getDatabase } from '~/lib/db'
 import { env } from '~/lib/env'
 import { Storage } from '~/lib/storage'
+import { DIRECT_DOWNLOAD_LEASE_MARGIN_MS } from '~/lib/storage-leases'
 
 describe('cleanup lifecycle', () => {
   beforeAll(() => {
@@ -327,7 +328,7 @@ describe('cleanup lifecycle', () => {
   }, 30_000)
 
   test.skipIf(process.env.VITEST_STORAGE_DRIVER !== 's3')(
-    'a direct-download reader lease covers the signed URL lifetime',
+    'a direct-download reader lease outlives the signed URL, which honors the TTL',
     async () => {
       const db = await getDatabase()
       const storage = await Storage.fromEnv()
@@ -387,7 +388,10 @@ describe('cleanup lifecycle', () => {
         )
 
         expect(signedLifetimeSeconds).toBeGreaterThan(0)
-        expect(lease.expiresAt - startedAt).toBeGreaterThanOrEqual(signedLifetimeSeconds * 1000)
+        expect(signedLifetimeSeconds).toBeLessThanOrEqual(env.DIRECT_DOWNLOAD_URL_TTL_SECONDS)
+        expect(lease.expiresAt - startedAt).toBeGreaterThanOrEqual(
+          signedLifetimeSeconds * 1000 + DIRECT_DOWNLOAD_LEASE_MARGIN_MS,
+        )
         expect(accessed.lastDownloadedAt).toBeGreaterThanOrEqual(startedAt)
       } finally {
         env.ENABLE_DIRECT_DOWNLOADS = directDownloadsEnabled
