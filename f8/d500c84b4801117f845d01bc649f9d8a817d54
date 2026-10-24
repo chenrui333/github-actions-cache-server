@@ -1,0 +1,24 @@
+lib/metrics.ts
+  h_9df9c32c3f321d 1-2,4,47-294
+lib/storage.ts
+  h_9df9c32c3f321d 7,48,316,319-322,348,370,373,415,653,945,951-955,959-960,965-983,986-987,991
+routes/download/[locationId].ts
+  h_9df9c32c3f321d 6,48-51,57,65-66,71,95,118,125,131,135
+routes/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL.post.ts
+  h_9df9c32c3f321d 3,24-37
+tests/merge-concurrency.test.ts
+  h_9df9c32c3f321d 7,68-70,73-74
+tests/metrics.test.ts
+  h_9df9c32c3f321d 74-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8d500c84b4801117f845d01bc649f9d8a817d54",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
