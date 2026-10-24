@@ -28,6 +28,16 @@ volumes:
   cache-data:
 ```
 
+## Resource limits
+
+All optional.
+
+| Variable                 | Default | Effect                                                                        |
+| ------------------------ | ------- | ----------------------------------------------------------------------------- |
+| `STORAGE_S3_MAX_SOCKETS` | `50`    | Sockets per S3 connection pool, for `http://` and `https://` endpoints alike. |
+
+Reads and writes share this pool. A streaming merge holds a part read while its upload waits for a socket, so the minimum is 2, and a pool smaller than the number of concurrent merges can stall them.
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈
