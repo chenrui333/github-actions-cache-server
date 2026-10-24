@@ -285,5 +285,25 @@ export function migrations(
             .execute()
       },
     },
+    $9_upload_capability_hash: {
+      // SHA-256 of the capability in an Upload's URL (`?sig=`, ADR-0011). Nullable:
+      // Uploads created before this migration have none and accept no parts.
+      async up(db) {
+        // A database can already have the column, e.g. from a build that added it
+        // before this migration existed; keep it and the hashes it holds.
+        const tables = await db.introspection.getTables()
+        const exists = tables.some(
+          (table) =>
+            table.name === 'uploads' &&
+            table.columns.some((column) => column.name === 'capabilityHash'),
+        )
+        if (exists) return
+
+        await db.schema.alterTable('uploads').addColumn('capabilityHash', 'varchar(64)').execute()
+      },
+      async down(db) {
+        await db.schema.alterTable('uploads').dropColumn('capabilityHash').execute()
+      },
+    },
   } satisfies Record<string, Migration>
 }
