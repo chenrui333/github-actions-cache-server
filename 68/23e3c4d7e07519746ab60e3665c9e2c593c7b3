@@ -1,0 +1,18 @@
+src/error.rs
+  h_9df9c32c3f321d 3-4,10,16,18,33-38,40-131
+src/routes/passthrough.rs
+  h_9df9c32c3f321d 14,63
+src/storage/object.rs
+  h_9df9c32c3f321d 25,107-108,271-276,364-367,390,471,473-474,536,592-691
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6823e3c4d7e07519746ab60e3665c9e2c593c7b3",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
