@@ -7,6 +7,7 @@ import type { Server } from 'node:http'
 import type { StartedTestContainer } from 'testcontainers'
 import type { Env, envBaseSchema, envDbDriverSchema, envStorageDriverSchema } from '~/lib/schemas'
 
+import { generateKeyPairSync } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -44,6 +45,8 @@ const TESTING_ENV_BASE = {
   | 'CACHE_FILESYSTEM_MAX_USAGE_PERCENT'
   | 'ORPHANED_STORAGE_GRACE_PERIOD_HOURS'
   | 'ENABLE_DIRECT_DOWNLOADS'
+  | 'DIRECT_DOWNLOAD_URL_TTL_SECONDS'
+  | 'UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION'
   | 'EAGER_MERGE'
   | 'MAX_CONCURRENT_MERGES'
   | 'DOWNLOAD_IDLE_TIMEOUT_MS'
@@ -99,7 +102,9 @@ const TESTING_ENV_BY_STORAGE_DRIVER = {
     STORAGE_DRIVER: 'gcs',
     STORAGE_GCS_BUCKET: 'vitest',
     STORAGE_GCS_ENDPOINT: 'http://localhost:9000',
-    STORAGE_GCS_SERVICE_ACCOUNT_KEY: 'tests/gcs-service-account-key.json',
+    // generated in `setup`: fake-gcs-server needs no credentials, but signing a
+    // direct-download URL does
+    STORAGE_GCS_SERVICE_ACCOUNT_KEY: `${TEST_TEMP_DIR}/gcs-service-account-key.json`,
   },
   azblob: {
     STORAGE_DRIVER: 'azblob',
@@ -138,6 +143,20 @@ export async function setup() {
     recursive: true,
   })
   await fs.mkdir(TEST_TEMP_DIR, { recursive: true })
+  if (env.VITEST_STORAGE_DRIVER === 'gcs') {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    await fs.writeFile(
+      TESTING_ENV_BY_STORAGE_DRIVER.gcs.STORAGE_GCS_SERVICE_ACCOUNT_KEY,
+      JSON.stringify({
+        type: 'service_account',
+        project_id: 'vitest',
+        private_key_id: 'vitest',
+        private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+        client_email: 'vitest@vitest.iam.gserviceaccount.com',
+        token_uri: `${TESTING_ENV_BY_STORAGE_DRIVER.gcs.STORAGE_GCS_ENDPOINT}/token`,
+      }),
+    )
+  }
 
   // eslint-disable-next-line no-console
   console.log('Starting test containers for', env.VITEST_DB_DRIVER, env.VITEST_STORAGE_DRIVER)
@@ -216,7 +235,8 @@ export async function setup() {
           .withEntrypoint(['sh'])
           .withCommand([
             `-c`,
-            `mkdir -p /data/${env.STORAGE_GCS_BUCKET} && /bin/fake-gcs-server -scheme http -port 9000 -data /data`,
+            // `-public-host` routes path-style object GETs, the shape of a signed URL
+            `mkdir -p /data/${env.STORAGE_GCS_BUCKET} && /bin/fake-gcs-server -scheme http -port 9000 -public-host ${new URL(env.STORAGE_GCS_ENDPOINT).host} -data /data`,
           ])
           .withExposedPorts({
             container: 9000,
