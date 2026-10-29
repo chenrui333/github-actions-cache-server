@@ -4,7 +4,7 @@
   "version": "9.8.0",
   "private": true,
   "engines": {
-    "node": "25"
+    "node": "^26.13.0"
   },
   "scripts": {
     "prepare": "nitropack prepare",
