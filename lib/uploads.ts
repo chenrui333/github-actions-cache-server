@@ -108,7 +108,8 @@ async function receivePart(
   const { upload, part } = await retryOnLockConflict(() =>
     db
       .transaction()
-      .setIsolationLevel('serializable')
+      // The generation row lock serializes claims; a stale PG snapshot only aborts them.
+      .setIsolationLevel(env.DB_DRIVER === 'sqlite' ? 'serializable' : 'read committed')
       .execute(async (tx) => {
         if (await receipt(tx, uploadId, digest))
           throw new UploadProtocolError(409, 'Upload is already committed')
