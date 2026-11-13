@@ -1,0 +1,80 @@
+.gitignore
+  h_9df9c32c3f321d 15-16
+.prettierignore
+  h_9df9c32c3f321d 9
+CONTEXT.md
+  h_9df9c32c3f321d 35-37
+README.md
+  h_9df9c32c3f321d 56-108
+docs/adr/0013-upload-urls-carry-a-capability.md
+  h_9df9c32c3f321d 12-41
+lib/migrations.ts
+  h_9df9c32c3f321d 265-268,298-302
+lib/storage-lifecycle.ts
+  h_9df9c32c3f321d 118-143
+lib/storage.ts
+  h_9df9c32c3f321d 7-9,40-46,58-64,192-201,243,245,269,272-279,415,425,433-450,455-456,459-460,463-467,469-475,477-478,601-602,665,748-749,756,881,890,897,1283-1285,1301
+lib/twirp.ts
+  h_9df9c32c3f321d 75-76,80
+lib/upload-protocol.ts
+  h_9df9c32c3f321d 4,22-25,32-33,35-39,51-73,76-78,94
+lib/uploads.ts
+  h_9df9c32c3f321d 1-445
+routes/devstoreaccount1/upload/[uploadId].put.ts
+  h_9df9c32c3f321d 7,10,29-40,42-44
+routes/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload.ts
+  h_9df9c32c3f321d 9,15,26,30,33-34,38
+tasks/cleanup/uploads.ts
+  h_9df9c32c3f321d 4,42-53,60-63,66
+tests/authenticated-upload-completion.test.ts
+  h_9df9c32c3f321d 1-643
+tests/authenticated-upload-migration.test.ts
+  h_9df9c32c3f321d 1-102
+tests/cleanup-lifecycle.test.ts
+  h_9df9c32c3f321d 9,41-42,182,189,550,560-566,568-573
+tests/clients/opendal/Cargo.lock
+  h_9df9c32c3f321d 1-1901
+tests/clients/opendal/Cargo.toml
+  h_9df9c32c3f321d 1-11
+tests/clients/opendal/src/main.rs
+  h_9df9c32c3f321d 1-83
+tests/direct-download-auth.test.ts
+  h_9df9c32c3f321d 166-172,174,177-179
+tests/download-client-gone.test.ts
+  h_9df9c32c3f321d 16,88-89
+tests/download-merge-backpressure.test.ts
+  h_9df9c32c3f321d 55
+tests/download-merge-sink-gone.test.ts
+  h_9df9c32c3f321d 9,22-23
+tests/e2e.test.ts
+  h_9df9c32c3f321d 2,38-50
+tests/eager-merge.test.ts
+  h_9df9c32c3f321d 8,16-17
+tests/merge-concurrency.test.ts
+  h_9df9c32c3f321d 8,16-17
+tests/merge-socket-pool.test.ts
+  h_9df9c32c3f321d 9,20-21
+tests/opendal-client.test.ts
+  h_9df9c32c3f321d 1-130
+tests/request-logging.test.ts
+  h_9df9c32c3f321d 99-104,107,134
+tests/storage-lifecycle.test.ts
+  h_9df9c32c3f321d 125-138,143,147-150,155-159
+tests/upload-authorization.test.ts
+  h_9df9c32c3f321d 140,143,146-151
+tests/upload-capability-migration.test.ts
+  h_9df9c32c3f321d 33
+tests/upload-fixture.ts
+  h_9df9c32c3f321d 1-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a1af2f7f1289cbcf23daa3396c96d17f345dc12b",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
