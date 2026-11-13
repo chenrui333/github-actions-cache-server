@@ -1,0 +1,14 @@
+lib/uploads.ts
+  h_9df9c32c3f321d 111-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2ceabb78ef9b10dab213fae1f4b14a5f1894f9d5",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
