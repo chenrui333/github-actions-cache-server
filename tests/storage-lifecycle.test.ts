@@ -122,21 +122,45 @@ describe('storage lifecycle reconciliation', () => {
       await adapter.uploadStream(`${authorizedFolder}/parts/0`, Readable.from('authorized'))
       await adapter.uploadStream(`${orphanedFolder}/parts/0`, Readable.from('orphaned'))
 
+      // Other failure-path fixtures may leave real orphans. Check the exact
+      // complete inventory, rather than assuming only our two folders exist.
+      const inventory = await adapter.listStorageFolders()
+      const locations = await db.selectFrom('storage_locations').select('folderName').execute()
+      const uploads = await db.selectFrom('uploads').select('folderName').execute()
+      const owners = new Set([...locations, ...uploads].map(({ folderName }) => folderName))
+      const now = Date.now() + 25 * 60 * 60 * 1000
+      const expectedOrphans = inventory.filter(
+        ({ folderName, updatedAt }) =>
+          !owners.has(folderName) && updatedAt <= now - 24 * 60 * 60 * 1000,
+      )
+      const expectedNames = new Set(expectedOrphans.map(({ folderName }) => folderName))
+      expect(expectedNames.has(orphanedFolder)).toBe(true)
+      expect(expectedNames.has(authorizedFolder)).toBe(false)
+
       const result = await reconcileOrphanedStorage({
         db,
         adapter,
         gracePeriodHours: 24,
-        now: Date.now() + 25 * 60 * 60 * 1000,
+        now,
       })
 
       expect(result).toMatchObject({
-        inspectedFolders: expect.any(Number),
-        deletedFolders: 1,
-        deletedObjects: 1,
+        inspectedFolders: inventory.length,
+        deletedFolders: expectedOrphans.length,
+        deletedObjects: expectedOrphans.reduce((sum, folder) => sum + folder.objectCount, 0),
+        deletedBytes: expectedOrphans.reduce((sum, folder) => sum + folder.bytes, 0),
         failures: 0,
       })
       expect(await adapter.countFilesInFolder(`${authorizedFolder}/parts`)).toBe(1)
       expect(await adapter.countFilesInFolder(`${orphanedFolder}/parts`)).toBe(0)
+      const after = await adapter.listStorageFolders()
+      expect(new Set(after.map(({ folderName }) => folderName))).toEqual(
+        new Set(
+          inventory
+            .filter(({ folderName }) => !expectedNames.has(folderName))
+            .map(({ folderName }) => folderName),
+        ),
+      )
     } finally {
       await db.deleteFrom('uploads').where('id', '=', uploadId).execute()
       await adapter.deleteFolder(authorizedFolder)

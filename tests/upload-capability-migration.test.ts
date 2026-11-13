@@ -30,7 +30,7 @@ test('the upload capability migration adds and removes its column', async () => 
   }
 
   try {
-    const latest = await migrator.migrateToLatest()
+    const latest = await migrator.migrateTo(MIGRATION)
     expect(latest.error).toBeUndefined()
     expect(await uploadColumns()).toContain('capabilityHash')
 

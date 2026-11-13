@@ -5,12 +5,14 @@ import type { AddressInfo } from 'node:net'
 
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
+import { Readable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { type } from 'arkenv'
 import { execa } from 'execa'
 import { exportJWK, SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
+import { getDatabase } from '~/lib/db'
 import {
   assertDirectDownloadsRequireTokenValidation,
   envBaseSchema,
@@ -163,13 +165,21 @@ async function twirp(method: string, token: string | undefined, body: object) {
 async function save(token: string, key: string, data: Buffer) {
   const created = await twirp('CreateCacheEntry', token, { key, version: 'v1' })
   expect(created.status).toBe(200)
-  const uploadUrl = created.json.signed_upload_url as string
-  const part = await fetch(uploadUrl, { method: 'PUT', body: new Uint8Array(data) })
+  const uploadUrl = created.json.signed_upload_url
+  if (typeof uploadUrl !== 'string') throw new Error('Create did not return an upload URL')
+  const id = Buffer.from('signed-auth-part').toString('base64')
+  const partUrl = new URL(uploadUrl)
+  partUrl.searchParams.set('comp', 'block')
+  partUrl.searchParams.set('blockid', id)
+  const part = await fetch(partUrl, { method: 'PUT', body: new Uint8Array(data) })
   expect(part.status).toBe(201)
-  // The signed URL already has a query (the upload capability), so append to it.
+  // Keep the signed URL's capability on the authenticated completion request.
   const blocklistUrl = new URL(uploadUrl)
   blocklistUrl.searchParams.set('comp', 'blocklist')
-  const blocklist = await fetch(blocklistUrl, { method: 'PUT' })
+  const blocklist = await fetch(blocklistUrl, {
+    method: 'PUT',
+    body: `<BlockList><Latest>${id}</Latest></BlockList>`,
+  })
   expect(blocklist.status).toBe(201)
   const finalized = await twirp('FinalizeCacheEntryUpload', token, {
     key,
@@ -345,6 +355,137 @@ describe('token validation and direct downloads', () => {
     expect(create.json.signed_upload_url).toBeUndefined()
     const finalize = await twirp('FinalizeCacheEntryUpload', token, { key, version: 'v1' })
     expect(finalize.status).toBe(401)
+  })
+
+  test.each(['whole', 'blocks'])(
+    'verified creator expiry fences %s publication without changing an existing entry',
+    async (mode) => {
+      const db = await getDatabase()
+      const key = `expiry-${randomUUID()}`
+      const fresh = await track(mint(claimsFor(repoA)))
+      await save(fresh, key, Buffer.from('preserved'))
+      const previous = await db
+        .selectFrom('cache_entries')
+        .selectAll()
+        .where('key', '=', key)
+        .execute()
+      const exp = Math.floor(Date.now() / 1000) + 2
+      const bearer = await track(mint(claimsFor(repoA), { exp }))
+      const created = await twirp('CreateCacheEntry', bearer, { key, version: 'v1' })
+      expect(created.status).toBe(200)
+      const url = new URL(String(created.json.signed_upload_url))
+      const id = Number(url.pathname.split('/').at(-1))
+      const upload = await db
+        .selectFrom('uploads')
+        .select('publicationExpiresAt')
+        .where('id', '=', id)
+        .executeTakeFirstOrThrow()
+      expect(upload.publicationExpiresAt).toBe(exp * 1000)
+      const blockId = Buffer.from('expiry-proof').toString('base64')
+      if (mode === 'blocks') {
+        const staged = new URL(url)
+        staged.searchParams.set('comp', 'block')
+        staged.searchParams.set('blockid', blockId)
+        const part = await fetch(staged, { method: 'PUT', body: 'replacement' })
+        expect(part.status).toBe(201)
+        url.searchParams.set('comp', 'blocklist')
+      }
+      await sleep(Math.max(0, exp * 1000 - Date.now() + 25))
+      const refused = await fetch(url, {
+        method: 'PUT',
+        body:
+          mode === 'whole' ? 'replacement' : `<BlockList><Latest>${blockId}</Latest></BlockList>`,
+      })
+      expect(refused.status).toBe(403)
+      expect(
+        await db.selectFrom('cache_entries').selectAll().where('key', '=', key).execute(),
+      ).toEqual(previous)
+      const finalized = await twirp('FinalizeCacheEntryUpload', bearer, { key, version: 'v1' })
+      expect(finalized.status).toBe(401)
+    },
+  )
+
+  test('creator expiry during asynchronous body/storage cannot publish its completed bytes', async () => {
+    const db = await getDatabase()
+    const key = `stream-expiry-${randomUUID()}`
+    const exp = Math.floor(Date.now() / 1000) + 3
+    const bearer = await track(mint(claimsFor(repoA), { exp }))
+    const created = await twirp('CreateCacheEntry', bearer, { key, version: 'v1' })
+    const url = new URL(String(created.json.signed_upload_url))
+    const id = Number(url.pathname.split('/').at(-1))
+    const release = Promise.withResolvers<void>()
+    const response = fetch(url, {
+      method: 'PUT',
+      body: Readable.toWeb(
+        Readable.from(
+          (async function* () {
+            yield 'first'
+            await release.promise
+            yield 'last'
+          })(),
+        ),
+      ) as BodyInit,
+      duplex: 'half',
+    } as RequestInit)
+    try {
+      await vi.waitFor(async () => {
+        expect(
+          await db
+            .selectFrom('upload_parts')
+            .select('id')
+            .where('uploadId', '=', id)
+            .where('sizeBytes', 'is', null)
+            .execute(),
+        ).toHaveLength(1)
+      })
+      await sleep(Math.max(0, exp * 1000 - Date.now() + 25))
+    } finally {
+      release.resolve()
+    }
+    const completed = await response
+    expect(completed.status).toBe(403)
+    expect(
+      await db.selectFrom('cache_entries').select('id').where('key', '=', key).execute(),
+    ).toHaveLength(0)
+    expect(
+      await db
+        .selectFrom('upload_receipts')
+        .select('uploadId')
+        .where('uploadId', '=', id)
+        .execute(),
+    ).toHaveLength(0)
+  })
+
+  test('expiry-unknown pre-upgrade modern URLs fail closed without guessing expiry or consuming the reservation', async () => {
+    const db = await getDatabase()
+    const key = `unknown-expiry-${randomUUID()}`
+    const bearer = await track(mint(claimsFor(repoA)))
+    const created = await twirp('CreateCacheEntry', bearer, { key, version: 'v1' })
+    const url = new URL(String(created.json.signed_upload_url))
+    const id = Number(url.pathname.split('/').at(-1))
+    await db
+      .updateTable('uploads')
+      .set({ publicationExpiresAt: null })
+      .where('id', '=', id)
+      .execute()
+    const original = await db
+      .selectFrom('uploads')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst()
+    const whole = await fetch(url, { method: 'PUT', body: 'not-authorized' })
+    expect(whole.status).toBe(403)
+    url.searchParams.set('comp', 'blocklist')
+    const manifest = await fetch(url, { method: 'PUT', body: '<BlockList/>' })
+    expect(manifest.status).toBe(403)
+    const finalized = await twirp('FinalizeCacheEntryUpload', bearer, { key, version: 'v1' })
+    expect(finalized.status).toBe(404)
+    expect(
+      await db.selectFrom('uploads').selectAll().where('id', '=', id).executeTakeFirst(),
+    ).toEqual(original)
+    expect(
+      await db.selectFrom('cache_entries').select('id').where('key', '=', key).execute(),
+    ).toHaveLength(0)
   })
 
   test(

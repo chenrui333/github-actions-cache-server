@@ -135,5 +135,7 @@ export async function getCacheScope(event: H3Event) {
   return {
     scopes,
     repoId,
+    // Never turn a decoded-but-unverified claim into delegated authority.
+    publicationExpiresAt: env.SKIP_TOKEN_VALIDATION ? null : decoded.exp! * 1000,
   }
 }

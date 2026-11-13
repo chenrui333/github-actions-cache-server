@@ -52,6 +52,7 @@ describe('download merge backpressure', () => {
       partCount: PART_COUNT,
       mergedAt: null,
       partsDeletedAt: null,
+      partNamesJson: null,
     }
 
     const deadline = new Promise<'timeout'>((res) => setTimeout(res, 5000, 'timeout'))

@@ -72,9 +72,10 @@ export async function readTwirpRequest<T>(
 export function sendTwirpResponse(event: H3Event, data: object, messageType: protobuf.Type) {
   if (!isProtobuf(event)) return data
 
-  const err = messageType.verify(data)
+  const message = messageType.fromObject(data)
+  const err = messageType.verify(message)
   if (err) throw createError({ statusCode: 500, statusMessage: `Invalid Twirp response: ${err}` })
 
   setResponseHeader(event, 'content-type', PROTOBUF_CONTENT_TYPE)
-  return Buffer.from(messageType.encode(messageType.fromObject(data)).finish())
+  return Buffer.from(messageType.encode(message).finish())
 }

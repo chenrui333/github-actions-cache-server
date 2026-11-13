@@ -4,6 +4,7 @@ import type { StorageAdapter } from './storage'
 import pLimit from 'p-limit'
 import { env } from './env'
 import { logger } from './logger'
+import { recoverExpiredUploadParts } from './uploads'
 
 export interface OrphanedStorageSummary {
   inspectedFolders: number
@@ -113,6 +114,34 @@ export async function claimPartsDeletionIfUnread(
     .where('partsDeletedAt', 'is', null)
     .executeTakeFirst()
   return Number(updated.numUpdatedRows) === 1
+}
+
+/** Recheck idle-upload selection under the same generation lock as publication. */
+export async function deleteUploadIfIdle(
+  tx: Transaction<Database>,
+  uploadId: number,
+  cutoff: number,
+) {
+  let query = tx.selectFrom('uploads').selectAll().where('id', '=', uploadId)
+  if (env.DB_DRIVER !== 'sqlite') query = query.forUpdate()
+  const upload = await query.executeTakeFirst()
+  if (
+    !upload ||
+    upload.createdAt >= cutoff ||
+    (upload.lastPartUploadedAt !== null && upload.lastPartUploadedAt >= cutoff)
+  )
+    return
+  const recovered = await recoverExpiredUploadParts(tx, uploadId)
+  const pending = await tx
+    .selectFrom('upload_parts')
+    .select('id')
+    .where('uploadId', '=', uploadId)
+    .where('sizeBytes', 'is', null)
+    .executeTakeFirst()
+  if (pending || upload.startedPartUploadCount !== upload.finishedPartUploadCount + recovered)
+    return
+  await tx.deleteFrom('uploads').where('id', '=', uploadId).execute()
+  return upload.folderName
 }
 
 export async function reconcileOrphanedStorage({

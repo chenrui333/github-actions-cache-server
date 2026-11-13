@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { getDatabase } from '~/lib/db'
 import { env } from '~/lib/env'
 import { Storage } from '~/lib/storage'
+import { completeFixtureUpload, stageFixturePart } from './upload-fixture'
 
 const scope = { version: 'v1', scope: 'refs/heads/main', repoId: '123' }
 
@@ -12,8 +13,8 @@ async function uploadEntry(storage: Storage, parts: Buffer[]) {
   const key = `merge-cap-${randomUUID()}`
   const upload = await storage.createUpload({ key, ...scope })
   for (const [index, part] of parts.entries())
-    await storage.uploadPart(upload!.id, index, Readable.from(part))
-  await storage.completeUpload({ key, ...scope })
+    await stageFixturePart(storage, upload!, index, Readable.from(part))
+  await completeFixtureUpload(storage, upload!)
   const db = await getDatabase()
   return db
     .selectFrom('cache_entries')

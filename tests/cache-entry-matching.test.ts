@@ -235,7 +235,9 @@ describe('cache entry matching', () => {
           .all() as { name: string }[]
       ).map((row) => row.name)
     try {
-      await expect(migrator.migrateToLatest()).resolves.not.toHaveProperty('error')
+      await expect(
+        migrator.migrateTo('$7_cache_entries_lookup_indexes'),
+      ).resolves.not.toHaveProperty('error')
       expect(indexes()).toEqual(['idx_cache_entries_lookup', 'idx_cache_entries_lookup_prefix'])
       // Explicit targets: later migrations sit above `$7`, so a single step down would not reach it.
       await expect(
@@ -245,6 +247,10 @@ describe('cache entry matching', () => {
       await expect(
         migrator.migrateTo('$7_cache_entries_lookup_indexes'),
       ).resolves.not.toHaveProperty('error')
+      expect(indexes()).toEqual(['idx_cache_entries_lookup', 'idx_cache_entries_lookup_prefix'])
+      await expect(migrator.migrateToLatest()).resolves.not.toHaveProperty('error')
+      const downgrade = await migrator.migrateTo('$7_cache_entries_lookup_indexes')
+      expect(String(downgrade.error)).toContain('forward-only')
       expect(indexes()).toEqual(['idx_cache_entries_lookup', 'idx_cache_entries_lookup_prefix'])
     } finally {
       await db.destroy()

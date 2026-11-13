@@ -15,6 +15,7 @@ const root = protobuf.parse(
   message CreateCacheEntryRequest { CacheMetadata metadata = 1; string key = 2; string version = 3; }
   message CreateCacheEntryResponse { bool ok = 1; string signed_upload_url = 2; string message = 3; }
   message FinalizeCacheEntryUploadRequest { CacheMetadata metadata = 1; string key = 2; int64 size_bytes = 3; string version = 4; }
+  message FinalizeCacheEntryUploadResponse { bool ok = 1; int64 entry_id = 2; }
   message GetCacheEntryDownloadURLRequest { CacheMetadata metadata = 1; string key = 2; repeated string restore_keys = 3; string version = 4; }
   message GetCacheEntryDownloadURLResponse { bool ok = 1; string signed_download_url = 2; string matched_key = 3; }
 `,
@@ -24,6 +25,7 @@ const root = protobuf.parse(
 const CreateReq = root.lookupType('CreateCacheEntryRequest')
 const CreateRes = root.lookupType('CreateCacheEntryResponse')
 const FinalizeReq = root.lookupType('FinalizeCacheEntryUploadRequest')
+const FinalizeRes = root.lookupType('FinalizeCacheEntryUploadResponse')
 const GetReq = root.lookupType('GetCacheEntryDownloadURLRequest')
 const GetRes = root.lookupType('GetCacheEntryDownloadURLResponse')
 
@@ -94,4 +96,33 @@ test('protobuf FinalizeCacheEntryUpload decodes the body (missing upload → 404
 
   // 404 (not 400) proves the protobuf body parsed and validated successfully.
   expect(response.status).toBe(404)
+})
+
+test('protobuf acknowledgment returns the completed exact generation and restores its nonempty payload', async () => {
+  const key = `protobuf-complete-${crypto.randomUUID()}`
+  const created = await decode<{ signed_upload_url: string }>(
+    await post('CreateCacheEntry', CreateReq, { key, version: 'v1' }),
+    CreateRes,
+  )
+  const url = new URL(created.signed_upload_url)
+  const stored = await fetch(url, { method: 'PUT', body: 'protobuf-payload' })
+  expect(stored.status).toBe(201)
+  const response = await post('FinalizeCacheEntryUpload', FinalizeReq, {
+    key,
+    version: 'v1',
+    size_bytes: String(Buffer.byteLength('protobuf-payload')),
+  })
+  expect(response.status).toBe(200)
+  expect(response.headers.get('content-type')).toContain('application/protobuf')
+  expect(await decode(response, FinalizeRes)).toEqual({
+    ok: true,
+    entry_id: url.pathname.split('/').at(-1),
+  })
+  const lookup = await decode<{ ok: boolean; signed_download_url: string }>(
+    await post('GetCacheEntryDownloadURL', GetReq, { key, version: 'v1' }),
+    GetRes,
+  )
+  expect(lookup.ok).toBe(true)
+  const download = await fetch(lookup.signed_download_url)
+  expect(await download.text()).toBe('protobuf-payload')
 })

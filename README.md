@@ -53,6 +53,13 @@ They require token validation: the server refuses to start with `SKIP_TOKEN_VALI
 | `ACTIONS_TOKEN_AUDIENCE`                                 | unset   | Comma-separated `aud` values a token must carry; unset skips the check, an empty list is refused. |
 | `UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION` | `false` | Allows direct downloads with `SKIP_TOKEN_VALIDATION=true`. Local testing only.                    |
 
+## Unpublished authenticated-completion candidate
+
+See [the patch changelog](CHANGELOG.md) for `9.8.0-backpressure.4`, its
+forward-only migration, authorization-time boundary and required client drain.
+This candidate remains Security OWNER/model-review gated, not approved for
+tagging, publication or deployment.
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈

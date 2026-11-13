@@ -6,6 +6,7 @@ import { getDatabase } from '~/lib/db'
 import { env } from '~/lib/env'
 import { Storage } from '~/lib/storage'
 import { DIRECT_DOWNLOAD_LEASE_MARGIN_MS } from '~/lib/storage-leases'
+import { completeFixtureUpload, stageFixturePart } from './upload-fixture'
 
 describe('cleanup lifecycle', () => {
   beforeAll(() => {
@@ -37,8 +38,8 @@ describe('cleanup lifecycle', () => {
         const upload = await storage.createUpload(entry)
         expect(upload).toBeDefined()
         for (const [partIndex, part] of entry.parts.entries())
-          await storage.uploadPart(upload!.id, partIndex, Readable.from(part))
-        await storage.completeUpload(entry)
+          await stageFixturePart(storage, upload!, partIndex, Readable.from(part))
+        await completeFixtureUpload(storage, upload!)
         const cache = await storage.matchCacheEntry({
           keys: [entry.key],
           version: entry.version,
@@ -178,16 +179,14 @@ describe('cleanup lifecycle', () => {
       scope: 'refs/heads/main',
       repoId: '123',
     })
-    await storage.uploadPart(upload!.id, 0, Readable.from('payload'))
+    await stageFixturePart(storage, upload!, 0, Readable.from('payload'))
     const deleteFolder = vi
       .spyOn(storage.adapter, 'deleteFolder')
       .mockRejectedValue(new Error('no'))
 
     try {
       env.CACHE_MAX_SIZE_BYTES = 1
-      await expect(
-        storage.completeUpload({ key, version: 'v1', scope: 'refs/heads/main', repoId: '123' }),
-      ).resolves.toBeDefined()
+      await expect(completeFixtureUpload(storage, upload!)).resolves.toBeDefined()
     } finally {
       env.CACHE_MAX_SIZE_BYTES = originalBudget
       deleteFolder.mockRestore()
@@ -548,7 +547,7 @@ describe('cleanup lifecycle', () => {
     }
   })
 
-  test('failed upload finalization removes the upload folder after its database record', async () => {
+  test('key-only finalization cannot delete a pending upload or its data', async () => {
     const storage = await Storage.fromEnv()
     const key = randomUUID()
     const upload = await storage.createUpload({
@@ -558,11 +557,19 @@ describe('cleanup lifecycle', () => {
       repoId: '123',
     })
     expect(upload).toBeDefined()
-    await storage.adapter.uploadStream(`${upload!.id}/untracked`, Readable.from('partial'))
-
+    const db = await getDatabase()
+    const before = await db
+      .selectFrom('uploads')
+      .selectAll()
+      .where('id', '=', upload!.id)
+      .executeTakeFirstOrThrow()
+    await storage.adapter.uploadStream(`${before.folderName}/untracked`, Readable.from('partial'))
     await expect(
-      storage.completeUpload({ key, version: 'v1', scope: 'refs/heads/main', repoId: '123' }),
-    ).rejects.toThrow('No parts have been uploaded')
-    expect(await storage.adapter.countFilesInFolder(upload!.id.toString())).toBe(0)
+      storage.acknowledgeUpload({ key, version: 'v1', scope: 'refs/heads/main', repoId: '123' }),
+    ).resolves.toBeUndefined()
+    expect(
+      await db.selectFrom('uploads').selectAll().where('id', '=', upload!.id).executeTakeFirst(),
+    ).toEqual(before)
+    expect(await storage.adapter.countFilesInFolder(before.folderName)).toBe(1)
   })
 })
