@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { Readable as ReadableType } from 'node:stream'
 import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 import { SaxesParser } from 'saxes'
@@ -18,16 +19,24 @@ export interface BlockReference {
 }
 
 export class UploadProtocolError extends Error {
-  constructor(readonly statusCode: number, message: string) {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
     super(message)
     this.name = 'UploadProtocolError'
   }
 }
 
 export function validateBlockId(id: string) {
+  if (id.length < 4 || id.length > 88)
+    throw new UploadProtocolError(400, 'Block IDs must encode 1 to 64 opaque bytes')
   const bytes = Buffer.from(id, 'base64')
-  if (bytes.length < 1 || bytes.length > 64 || bytes.toString('base64') !== id)
-    throw new UploadProtocolError(400, 'Block IDs must be canonical Base64 encoding 1 to 64 opaque bytes')
+  if (bytes.length === 0 || bytes.length > 64 || bytes.toString('base64') !== id)
+    throw new UploadProtocolError(
+      400,
+      'Block IDs must be canonical Base64 encoding 1 to 64 opaque bytes',
+    )
   return bytes.length
 }
 
@@ -39,17 +48,34 @@ export function requestBody(request: IncomingMessage) {
   const expected = length === undefined ? undefined : Number(length)
   if (expected !== undefined && !Number.isSafeInteger(expected))
     throw new UploadProtocolError(400, 'Invalid Content-Length')
-  return Readable.from((async function* () {
-    let size = 0
-    for await (const chunk of request) {
-      size += chunk.length
-      yield chunk
-    }
-    if (!request.complete || (expected !== undefined && size !== expected))
-      throw new UploadProtocolError(400, 'Incomplete upload request body')
-  })())
+  const md5 = request.headers['content-md5']
+  if (
+    md5 !== undefined &&
+    (Array.isArray(md5) ||
+      Buffer.from(md5, 'base64').length !== 16 ||
+      Buffer.from(md5, 'base64').toString('base64') !== md5)
+  )
+    throw new UploadProtocolError(400, 'Invalid Content-MD5')
+  const checksum = md5 === undefined ? undefined : createHash('md5')
+  return Readable.from(
+    (async function* () {
+      let size = 0
+      for await (const chunk of request) {
+        size += chunk.length
+        checksum?.update(chunk)
+        yield chunk
+      }
+      if (!request.complete || (expected !== undefined && size !== expected))
+        throw new UploadProtocolError(400, 'Incomplete upload request body')
+      if (checksum && checksum.digest('base64') !== md5)
+        throw new UploadProtocolError(400, 'Content-MD5 does not match')
+    })(),
+  )
 }
 
+function fail() {
+  throw new UploadProtocolError(400, 'Invalid Azure block-list manifest')
+}
 /** Azure's ordered block manifest, not counters or a numeric block-ID suffix. */
 export async function parseBlockList(body: ReadableType) {
   const blocks: BlockReference[] = []
@@ -62,11 +88,10 @@ export async function parseBlockList(body: ReadableType) {
   let value = ''
   let idLength: number | undefined
   let bytes = 0
-  const fail = () => { throw new UploadProtocolError(400, 'Invalid Azure block-list manifest') }
   parser.on('doctype', fail)
   parser.on('error', fail)
   parser.on('opentag', (tag) => {
-    if (Object.keys(tag.attributes).length !== 0) fail()
+    if (Object.keys(tag.attributes).length > 0) fail()
     if (depth === 0) {
       if (root || tag.name !== 'BlockList') fail()
       root = true

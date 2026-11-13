@@ -1,0 +1,11 @@
+[package]
+name = "cache-opendal-client-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+bytes = "1"
+opendal = { version = "=0.55.0", features = ["services-ghac"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

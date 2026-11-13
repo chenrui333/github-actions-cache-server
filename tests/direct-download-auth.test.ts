@@ -163,13 +163,20 @@ async function twirp(method: string, token: string | undefined, body: object) {
 async function save(token: string, key: string, data: Buffer) {
   const created = await twirp('CreateCacheEntry', token, { key, version: 'v1' })
   expect(created.status).toBe(200)
-  const uploadUrl = created.json.signed_upload_url as string
-  const part = await fetch(uploadUrl, { method: 'PUT', body: new Uint8Array(data) })
+  const uploadUrl = created.json.signed_upload_url
+  if (typeof uploadUrl !== 'string') throw new Error('Create did not return an upload URL')
+  const id = Buffer.from('signed-auth-part').toString('base64')
+  const partUrl = new URL(uploadUrl)
+  partUrl.searchParams.set('comp', 'block')
+  partUrl.searchParams.set('blockid', id)
+  const part = await fetch(partUrl, { method: 'PUT', body: new Uint8Array(data) })
   expect(part.status).toBe(201)
-  // The signed URL already has a query (the upload capability), so append to it.
+  // Keep the signed URL's capability on the authenticated completion request.
   const blocklistUrl = new URL(uploadUrl)
   blocklistUrl.searchParams.set('comp', 'blocklist')
-  const blocklist = await fetch(blocklistUrl, { method: 'PUT' })
+  const blocklist = await fetch(blocklistUrl, {
+    method: 'PUT', body: `<BlockList><Latest>${id}</Latest></BlockList>`,
+  })
   expect(blocklist.status).toBe(201)
   const finalized = await twirp('FinalizeCacheEntryUpload', token, {
     key,

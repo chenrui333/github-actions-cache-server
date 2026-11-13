@@ -4,8 +4,9 @@ import type { Writable } from 'node:stream'
 import type { Database, StorageLocation } from './db'
 import type { MergeKind, S3Pool } from './metrics'
 import type { Env } from './schemas'
-import { Buffer } from 'node:buffer'
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import type { BlockReference, UploadIdentity } from './upload-protocol'
+import type { UploadPublication } from './uploads'
+import { randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import { Agent as HttpAgent } from 'node:http'
@@ -35,9 +36,14 @@ import { chunk } from 'remeda'
 import { match } from 'ts-pattern'
 import { getDatabase, retryOnLockConflict } from './db'
 import { env } from './env'
-import { generateNumberId } from './helpers'
 import { logger } from './logger'
-import { cacheMergesSkippedTotal, instrumentS3Agent, observeS3Request, trackMerge } from './metrics'
+import {
+  cacheMergesSkippedTotal,
+  cacheUploadsTotal,
+  instrumentS3Agent,
+  observeS3Request,
+  trackMerge,
+} from './metrics'
 import {
   acquireMergeLease,
   createReaderLease,
@@ -49,6 +55,13 @@ import {
   renewReaderLease,
 } from './storage-leases'
 import { deleteStorageLocationIfUnread, noActiveReaderLease } from './storage-lifecycle'
+import * as uploads from './uploads'
+
+function partNames(location: Pick<StorageLocation, 'partCount' | 'partNamesJson'>): string[] {
+  return location.partNamesJson === null
+    ? Array.from({ length: location.partCount }, (_, index) => String(index))
+    : JSON.parse(location.partNamesJson)
+}
 
 // Bounds the self-heal retry when matching keeps surfacing Dangling Cache
 // Entries for the same prefix — caps a pathological scan (ADR-0005).
@@ -150,16 +163,6 @@ export class Storage {
     this.db = db
   }
 
-  private async abandonUpload(uploadId: number, folderName: string, reason: Error): Promise<never> {
-    await this.db.deleteFrom('uploads').where('id', '=', uploadId).execute()
-    try {
-      await this.adapter.deleteFolder(folderName)
-    } catch (err) {
-      throw new AggregateError([reason, err], reason.message)
-    }
-    throw reason
-  }
-
   private protectDownloadStream(stream: Readable, readerLeaseId: string) {
     const renewalTimer = setInterval(() => {
       void renewReaderLease(this.db, readerLeaseId)
@@ -186,9 +189,16 @@ export class Storage {
   }
 
   private async ensurePartsExist(location: StorageLocation) {
-    const partsFolder = `${location.folderName}/parts`
-    const actualPartCount = await this.adapter.countFilesInFolder(partsFolder)
-    if (actualPartCount < location.partCount) throw new ObjectNotFoundError(partsFolder)
+    if (location.partNamesJson === null) {
+      const count = await this.adapter.countFilesInFolder(`${location.folderName}/parts`)
+      if (count < location.partCount) throw new ObjectNotFoundError(location.folderName)
+    } else {
+      const names = new Set(partNames(location))
+      if (names.size === 0) return
+      const stored = await this.adapter.listFolder(`${location.folderName}/parts`)
+      for (const part of stored) names.delete(part.name)
+      if (names.size > 0) throw new ObjectNotFoundError(`${location.folderName}/parts`)
+    }
   }
 
   private async downloadFromCacheEntryLocation(location: StorageLocation, signal?: AbortSignal) {
@@ -230,9 +240,9 @@ export class Storage {
   private async *streamParts(location: StorageLocation, signal?: AbortSignal) {
     if (location.partsDeletedAt) throw new Error('No parts to feed for location with deleted parts')
 
-    for (let i = 0; i < location.partCount; i++) {
+    for (const name of partNames(location)) {
       const partStream = await this.adapter.createDownloadStream(
-        `${location.folderName}/parts/${i}`,
+        `${location.folderName}/parts/${name}`,
         signal,
       )
 
@@ -256,14 +266,17 @@ export class Storage {
     partCount: number
     mergedAt: number | null
     partsDeletedAt: number | null
+    partNamesJson: string | null
   }) {
     if (location.mergedAt) return this.adapter.objectExists(`${location.folderName}/merged`)
-    if (location.partsDeletedAt || location.partCount === 0) return false
-    // ponytail: single-part HEAD, not a full LIST of parts. External drift wipes
-    // the whole folder and the server never produces partial Part loss, so
-    // Part 0's absence is a sufficient proxy. Won't catch surgical deletion of
-    // an interior Part. See ADR-0005.
-    return this.adapter.objectExists(`${location.folderName}/parts/0`)
+    if (location.partsDeletedAt) return false
+    if (location.partNamesJson !== null) {
+      const names = partNames(location)
+      return (
+        names.length === 0 || this.adapter.objectExists(`${location.folderName}/parts/${names[0]}`)
+      )
+    }
+    return location.partCount !== 0 && this.adapter.objectExists(`${location.folderName}/parts/0`)
   }
 
   private async purgeDanglingCacheEntry(cacheEntryId: string, locationId: string) {
@@ -399,6 +412,7 @@ export class Storage {
   private async mergeEagerly(location: StorageLocation, partSizes: number[]) {
     const compose = this.adapter.composeParts
     const composable =
+      partSizes.length > 0 &&
       compose &&
       partSizes.length <= compose.maxParts &&
       partSizes.every(
@@ -408,7 +422,7 @@ export class Storage {
       )
     await this.startMerge(location, composable ? 'compose' : 'stream', () =>
       composable
-        ? compose.run(location.folderName, location.partCount)
+        ? compose.run(location.folderName, partNames(location))
         : this.adapter.uploadStream(
             `${location.folderName}/merged`,
             Readable.from(this.streamParts(location)),
@@ -416,176 +430,52 @@ export class Storage {
     )
   }
 
+  private async finishUpload(result: UploadPublication) {
+    if (result.location) {
+      cacheUploadsTotal.inc()
+      try {
+        await this.enforceStorageBudget()
+      } catch (err) {
+        logger.warn('Capacity-based Eviction failed after upload completion', { error: err })
+      }
+      if (env.EAGER_MERGE) {
+        try {
+          await this.mergeEagerly(result.location, result.sizes)
+        } catch (err) {
+          logger.warn('Eager Merge failed to start after upload completion', { error: err })
+        }
+      }
+    }
+    return result.receipt
+  }
   waitForOngoingMerges() {
     return Promise.all(this.mergeStreamPromises)
   }
 
-  /**
-   * Whether `capability` is the one issued with the Upload. Upload URLs are not
-   * covered by the Actions runtime token, so this is their only authorization.
-   * Unknown Uploads and missing or wrong capabilities are indistinguishable.
-   */
-  async authorizeUpload(uploadId: number, capability: string | undefined) {
-    const upload = await this.db
-      .selectFrom('uploads')
-      .where('id', '=', uploadId)
-      .select('capabilityHash')
-      .executeTakeFirst()
-    if (!upload?.capabilityHash || !capability) return false
+  authorizeUpload(uploadId: number, capability: string | undefined) {
+    return uploads.authorizeUpload(this.db, uploadId, capability)
+  }
 
-    return timingSafeEqual(
-      Buffer.from(upload.capabilityHash, 'hex'),
-      createHash('sha256').update(capability).digest(),
+  stageBlock(uploadId: number, capability: string | undefined, blockId: string, stream: Readable) {
+    return uploads.stageBlock(this.db, this.adapter, uploadId, capability, blockId, stream)
+  }
+
+  async putBlob(uploadId: number, capability: string | undefined, stream: Readable) {
+    return this.finishUpload(
+      await uploads.putBlob(this.db, this.adapter, uploadId, capability, stream),
     )
   }
 
-  async uploadPart(uploadId: number, partIndex: number, stream: Readable) {
-    const upload = await this.db
-      .selectFrom('uploads')
-      .where('id', '=', uploadId)
-      .select(['folderName'])
-      .executeTakeFirst()
-    if (!upload) return
-
-    await this.db
-      .updateTable('uploads')
-      .set({
-        startedPartUploadCount: sql`${sql.ref('startedPartUploadCount')} + 1`,
-      })
-      .where('id', '=', uploadId)
-      .execute()
-
-    await this.adapter.uploadStream(`${upload.folderName}/parts/${partIndex}`, stream)
-
-    await this.db
-      .updateTable('uploads')
-      .set({
-        lastPartUploadedAt: Date.now(),
-        finishedPartUploadCount: sql`${sql.ref('finishedPartUploadCount')} + 1`,
-      })
-      .where('id', '=', uploadId)
-      .execute()
+  async commitBlockList(
+    uploadId: number,
+    capability: string | undefined,
+    blocks: BlockReference[],
+  ) {
+    return this.finishUpload(await uploads.commitBlockList(this.db, uploadId, capability, blocks))
   }
 
-  async completeUpload({
-    key,
-    version,
-    scope,
-    repoId,
-  }: {
-    key: string
-    version: string
-    scope: string
-    repoId: string
-  }) {
-    const upload = await this.db
-      .selectFrom('uploads')
-      .where('key', '=', key)
-      .where('version', '=', version)
-      .where('scope', '=', scope)
-      .where('repoId', '=', repoId)
-      .selectAll()
-      .executeTakeFirst()
-    if (!upload) return
-
-    if (upload.finishedPartUploadCount === 0) {
-      return this.abandonUpload(
-        upload.id,
-        upload.folderName,
-        new Error('No parts have been uploaded'),
-      )
-    }
-
-    if (upload.startedPartUploadCount !== upload.finishedPartUploadCount) {
-      return this.abandonUpload(
-        upload.id,
-        upload.folderName,
-        new Error(
-          `Not all parts have been uploaded (only ${upload.finishedPartUploadCount} of ${upload.startedPartUploadCount} parts uploaded)`,
-        ),
-      )
-    }
-
-    const parts = await this.adapter.listFolder(`${upload.folderName}/parts`)
-    const partCount = parts.length
-    if (partCount !== upload.finishedPartUploadCount) {
-      return this.abandonUpload(
-        upload.id,
-        upload.folderName,
-        new Error(
-          `Uploaded part count does not match actual part count in storage (expected ${upload.finishedPartUploadCount} but found ${partCount})`,
-        ),
-      )
-    }
-
-    const partSizes = parts
-      .toSorted((a, b) => Number(a.name) - Number(b.name))
-      .map(({ bytes }) => bytes)
-    const location: StorageLocation = {
-      id: randomUUID(),
-      folderName: upload.folderName,
-      partCount,
-      mergedAt: null,
-      mergeStartedAt: null,
-      partsDeletedAt: null,
-      lastDownloadedAt: null,
-      sizeBytes: parts.reduce((sum, { bytes }) => sum + bytes, 0),
-    }
-
-    await this.db.transaction().execute(async (tx) => {
-      await tx.insertInto('storage_locations').values(location).execute()
-
-      const existingCacheEntry = await tx
-        .selectFrom('cache_entries')
-        .where('key', '=', key)
-        .where('version', '=', version)
-        .where('scope', '=', scope)
-        .where('repoId', '=', repoId)
-        .innerJoin('storage_locations', 'storage_locations.id', 'cache_entries.locationId')
-        .select(['cache_entries.id', 'cache_entries.locationId'])
-        .executeTakeFirst()
-
-      if (existingCacheEntry) {
-        await tx
-          .updateTable('cache_entries')
-          .set({
-            updatedAt: Date.now(),
-            locationId: location.id,
-          })
-          .where('id', '=', existingCacheEntry.id)
-          .execute()
-      } else
-        await tx
-          .insertInto('cache_entries')
-          .values({
-            key: upload.key,
-            version: upload.version,
-            id: randomUUID(),
-            updatedAt: Date.now(),
-            locationId: location.id,
-            scope,
-            repoId,
-          })
-          .execute()
-
-      await tx.deleteFrom('uploads').where('id', '=', upload.id).execute()
-    })
-
-    try {
-      await this.enforceStorageBudget()
-    } catch (err) {
-      logger.warn('Capacity-based Eviction failed after upload completion', { error: err })
-    }
-
-    if (env.EAGER_MERGE) {
-      try {
-        await this.mergeEagerly(location, partSizes)
-      } catch (err) {
-        logger.warn('Eager Merge failed to start after upload completion', { error: err })
-      }
-    }
-
-    return upload
+  acknowledgeUpload(identity: UploadIdentity) {
+    return uploads.acknowledgeUpload(this.db, identity)
   }
 
   async enforceStorageBudget() {
@@ -708,49 +598,8 @@ export class Storage {
     }
   }
 
-  async createUpload({
-    key,
-    version,
-    scope,
-    repoId,
-  }: {
-    key: string
-    version: string
-    scope: string
-    repoId: string
-  }) {
-    const existingUpload = await this.db
-      .selectFrom('uploads')
-      .where('key', '=', key)
-      .where('version', '=', version)
-      .where('scope', '=', scope)
-      .where('repoId', '=', repoId)
-      .select('id')
-      .executeTakeFirst()
-    if (existingUpload) return
-
-    const uploadId = generateNumberId()
-    // Only the hash is stored, so neither the database nor its query log can
-    // reproduce a working upload URL.
-    const capability = randomBytes(32).toString('hex')
-    await this.db
-      .insertInto('uploads')
-      .values({
-        id: uploadId,
-        folderName: uploadId.toString(),
-        createdAt: Date.now(),
-        key,
-        version,
-        scope,
-        repoId,
-        lastPartUploadedAt: null,
-        finishedPartUploadCount: 0,
-        startedPartUploadCount: 0,
-        capabilityHash: createHash('sha256').update(capability).digest('hex'),
-      })
-      .execute()
-
-    return { id: uploadId, capability }
+  createUpload(identity: UploadIdentity) {
+    return uploads.createUpload(this.db, identity)
   }
 
   async matchCacheEntry({
@@ -813,7 +662,7 @@ export class Storage {
       const location = await this.db
         .selectFrom('storage_locations')
         .where('id', '=', cacheEntry.match.locationId)
-        .select(['id', 'folderName', 'partCount', 'mergedAt', 'partsDeletedAt'])
+        .select(['id', 'folderName', 'partCount', 'mergedAt', 'partsDeletedAt', 'partNamesJson'])
         .executeTakeFirst()
 
       if (!location || !(await this.storageHasData(location))) {
@@ -896,16 +745,15 @@ export interface StorageAdapter {
   createDownloadUrl?(objectName: string, expiresAt: number): Promise<string>
   getFilesystemUsage?(): Promise<{ capacityBytes: number; usedBytes: number }>
   /**
-   * Server-side Merge: copies `${folderName}/parts/0..partCount-1` into
-   * `${folderName}/merged` inside the backend. Only applicable when every Part
-   * satisfies the limits; the caller checks them before calling `run`.
+   * Server-side Merge copies the ordered immutable Part names into `merged`.
+   * Repeated names repeat those bytes, exactly as in the authenticated manifest.
    */
   composeParts?: {
     /** Every Part but the last must be at least this large. */
     minPartBytes: number
     maxPartBytes: number
     maxParts: number
-    run(folderName: string, partCount: number): Promise<void>
+    run(folderName: string, partNames: string[]): Promise<void>
   }
   clear(): Promise<void>
 }
@@ -1030,7 +878,7 @@ export class S3Adapter implements StorageAdapter {
     minPartBytes: 5 * 1024 * 1024,
     maxPartBytes: 5 * 1024 ** 3,
     maxParts: 10_000,
-    run: async (folderName: string, partCount: number) => {
+    run: async (folderName: string, partNames: string[]) => {
       const Bucket = this.bucket
       const Key = `${this.keyPrefix}/${folderName}/merged`
       const { UploadId } = await this.clients.writes.send(
@@ -1039,14 +887,14 @@ export class S3Adapter implements StorageAdapter {
       if (!UploadId) throw new Error('S3 did not return an UploadId')
       try {
         const Parts = []
-        for (let PartNumber = 1; PartNumber <= partCount; PartNumber++) {
+        for (let PartNumber = 1; PartNumber <= partNames.length; PartNumber++) {
           const copy = await this.clients.writes.send(
             new UploadPartCopyCommand({
               Bucket,
               Key,
               UploadId,
               PartNumber,
-              CopySource: `${Bucket}/${this.keyPrefix}/${folderName}/parts/${PartNumber - 1}`,
+              CopySource: `${Bucket}/${this.keyPrefix}/${folderName}/parts/${partNames[PartNumber - 1]}`,
             }),
           )
           Parts.push({ PartNumber, ETag: copy.CopyPartResult?.ETag })
@@ -1432,9 +1280,9 @@ class GcsAdapter implements StorageAdapter {
     minPartBytes: 0,
     maxPartBytes: 5 * 1024 ** 4,
     maxParts: Infinity,
-    run: async (folderName: string, partCount: number) => {
-      const sources = Array.from({ length: partCount }, (_, index) =>
-        this.bucket.file(`${this.keyPrefix}/${folderName}/parts/${index}`),
+    run: async (folderName: string, partNames: string[]) => {
+      const sources = partNames.map((name) =>
+        this.bucket.file(`${this.keyPrefix}/${folderName}/parts/${name}`),
       )
       // Folds batches into a top-level temp object (reclaimed as Orphaned
       // Storage if we crash) so `merged` only ever appears in one final,
@@ -1450,7 +1298,7 @@ class GcsAdapter implements StorageAdapter {
           this.bucket.file(`${this.keyPrefix}/${folderName}/merged`),
         )
       } finally {
-        if (partCount > 32) await temp.delete({ ignoreNotFound: true })
+        if (partNames.length > 32) await temp.delete({ ignoreNotFound: true })
       }
     },
   }

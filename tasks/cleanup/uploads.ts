@@ -1,7 +1,7 @@
 import { getDatabase } from '~/lib/db'
 import { env } from '~/lib/env'
 import { getStorage } from '~/lib/storage'
-import { CleanupAggregateError, runCleanupTask } from '~/lib/storage-lifecycle'
+import { CleanupAggregateError, deleteUploadIfIdle, runCleanupTask } from '~/lib/storage-lifecycle'
 
 const itemsPerPage = 10
 
@@ -39,16 +39,31 @@ export default defineTask({
                 eb('createdAt', '<', oneMinuteAgo),
               ]),
             )
+            .whereRef('startedPartUploadCount', '=', 'finishedPartUploadCount')
+            .where((eb) =>
+              eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom('upload_parts')
+                    .select('id')
+                    .whereRef('upload_parts.uploadId', '=', 'uploads.id')
+                    .where('sizeBytes', 'is', null),
+                ),
+              ),
+            )
             .select(['id', 'folderName'])
             .limit(itemsPerPage)
             .execute()
           if (uploads.length === 0) break
 
           for (const upload of uploads) {
-            await db.deleteFrom('uploads').where('id', '=', upload.id).execute()
+            const folder = await db
+              .transaction()
+              .execute((tx) => deleteUploadIfIdle(tx, upload.id, oneMinuteAgo))
+            if (!folder) continue
             result.deletedUploads++
             try {
-              const reclaimed = await storage.adapter.deleteFolder(upload.folderName)
+              const reclaimed = await storage.adapter.deleteFolder(folder)
               result.deletedObjects += reclaimed.objects
               result.deletedBytes += reclaimed.bytes
             } catch (err) {

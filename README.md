@@ -53,6 +53,59 @@ They require token validation: the server refuses to start with `SKIP_TOKEN_VALI
 | `ACTIONS_TOKEN_AUDIENCE`                                 | unset   | Comma-separated `aud` values a token must carry; unset skips the check, an empty list is refused. |
 | `UNSAFE_ALLOW_DIRECT_DOWNLOADS_WITHOUT_TOKEN_VALIDATION` | `false` | Allows direct downloads with `SKIP_TOKEN_VALIDATION=true`. Local testing only.                    |
 
+## Candidate patch: 9.8.0-backpressure.4
+
+Unpublished; source review and deployment approval are separate gates. This patch
+does not change the V2 client wire protocol or V1 Results Passthrough.
+
+### Authenticated completion
+
+The capability-bearing whole-blob PUT or validated Azure Put Block List publishes
+the exact upload generation. Key-only Twirp Finalize is a read-only,
+repository/ref-scoped acknowledgment; it cannot publish or abandon a pending
+successor. HTTP completion, actual sizes and optional Content-MD5 are checked.
+Opaque Base64 block IDs (including OpenDAL's 16-byte UUIDs) are stored as immutable
+revisions. The submitted manifest defines order, repeated references and selected
+blocks; numeric suffixes and started/finished counters are not payload proof.
+Identical completion retries use generation-bound receipts while the completed
+Storage Location remains retained. A different completed payload is refused.
+
+Requested-key retirement is restricted to NULL-capability legacy reservations
+whose creation and last progress are both older than seven days, with no active
+Part, ambiguous duplicate, completed Cache Entry or shared Storage Location.
+Modern capabilities, recent progress and in-flight streams are preserved.
+Seven days exceeds GitHub's documented five-day self-hosted job limit with two
+days of margin; it is not a generic upload lease or proof of a JWT's expiry.
+See [Actions limits](https://docs.github.com/en/actions/reference/limits).
+This metadata-only recovery does not enable global cleanup or delete payloads;
+`DISABLE_CLEANUP_JOBS` retains its existing meaning. Existing cleanup also
+rechecks generation/activity under the publication lock before deletion.
+
+### Forward migration and rollout gate
+
+`$9_authenticated_upload_completion` adds immutable Part metadata, completion
+receipts and ordered Part names. Existing completed data remains readable with
+its original numeric Part layout. It does not guess opaque IDs for unfinished
+pre-upgrade multipart uploads: drain those clients before rollout or restart
+them under an explicitly approved maintenance plan. A pre-upgrade completed entry
+without a receipt remains restorable, but a delayed Finalize cannot manufacture
+a completion receipt or mutate an active upload.
+
+This migration is **forward-only**. An older binary cannot read newly ordered
+Parts and rejects the new migration ledger. Do not downgrade the image or drop
+the new metadata. Before an approved rollout, capture a recoverable database
+backup, preserve payload storage, fence the single RWO writer and confirm the
+active-upload drain. Recovery requires a separately reviewed forward repair or
+an explicitly approved pre-migration database/storage restoration boundary;
+restoring an older database may orphan newer payloads.
+
+The candidate must pass the configured backend matrix and real client
+cold-write/warm-read checks, including OpenDAL multipart order and JSON/protobuf
+acknowledgments. Review the exact candidate, migration floor and client drain
+before approving a patch tag/image. Recheck immutable version collisions at
+publication. No patch tag, image publication, runtime migration or deployment is
+authorized by preparing these sources.
+
 ## Documentation
 
 👉 <https://gha-cache-server.falcondev.io/getting-started> 👈

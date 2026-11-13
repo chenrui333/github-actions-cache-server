@@ -13,6 +13,7 @@ import * as h3 from 'h3'
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
 import { getDatabase } from '~/lib/db'
 import { getStorage, S3Adapter } from '~/lib/storage'
+import { completeFixtureUpload, stageFixturePart } from './upload-fixture'
 
 /**
  * A stand-in for the object store: answers every GET with an unending body, so
@@ -84,8 +85,8 @@ async function createMergedEntry() {
   const entry = { key, version: 'v1', scope: 'refs/heads/main', repoId: '123' }
   const upload = await storage.createUpload(entry)
   if (!upload) throw new Error('createUpload returned nothing')
-  await storage.uploadPart(upload.id, 0, Readable.from('payload'))
-  await storage.completeUpload(entry)
+  await stageFixturePart(storage, upload, 0, Readable.from('payload'))
+  await completeFixtureUpload(storage, upload!)
   const cacheEntry = await db
     .selectFrom('cache_entries')
     .where('key', '=', key)

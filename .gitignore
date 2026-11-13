@@ -13,3 +13,4 @@ data/
 tests/temp/
 actions-runner/
 benchmark.csv
+tests/clients/opendal/target/

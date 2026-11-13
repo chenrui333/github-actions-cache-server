@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -34,12 +35,18 @@ describe(`save and restore cache with @actions/cache package`, () => {
       await saveCache([testFilePath], 'cache-key')
       await fs.rm(testFilePath)
 
-      // restore
-      const cacheHitKey = await restoreCache([testFilePath], 'cache-key')
-      expect(cacheHitKey).toBe('cache-key')
-
-      // check contents
-      const restoredContents = await fs.readFile(testFilePath)
-      expect(restoredContents.compare(expectedContents)).toBe(0)
+      // Both the first restore and a warm restore must return the exact bytes.
+      // Stream the comparison so the 512MiB case does not copy another archive.
+      for (const phase of ['cold', 'warm']) {
+        const cacheHitKey = await restoreCache([testFilePath], 'cache-key')
+        expect(cacheHitKey, phase).toBe('cache-key')
+        let offset = 0
+        for await (const chunk of createReadStream(testFilePath)) {
+          expect(chunk.compare(expectedContents, offset, offset + chunk.length), phase).toBe(0)
+          offset += chunk.length
+        }
+        expect(offset, phase).toBe(expectedContents.length)
+        await fs.rm(testFilePath)
+      }
     })
 })

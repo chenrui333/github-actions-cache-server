@@ -262,7 +262,10 @@ export function migrations(
     $9_authenticated_upload_completion: {
       async up(db) {
         const idType = driver === 'mysql' ? 'varchar(36)' : 'text'
-        await db.schema.alterTable('storage_locations').addColumn('partNamesJson', 'text').execute()
+        await db.schema
+          .alterTable('storage_locations')
+          .addColumn('partNamesJson', driver === 'mysql' ? sql`longtext` : 'text')
+          .execute()
         await db.schema
           .createTable('upload_parts')
           .addColumn('id', idType, (col) => col.primaryKey())
@@ -291,6 +294,11 @@ export function migrations(
           .addColumn('completionHash', 'varchar(64)', (col) => col.notNull())
           .addColumn('sizeBytes', 'bigint', (col) => col.notNull())
           .addPrimaryKeyConstraint('pk_upload_receipts_generation', ['uploadId', 'capabilityHash'])
+          .execute()
+        await db.schema
+          .createIndex('idx_upload_receipts_location')
+          .on('upload_receipts')
+          .columns(['locationId'])
           .execute()
       },
       async down() {

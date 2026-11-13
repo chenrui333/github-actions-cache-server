@@ -96,9 +96,15 @@ test('upload capabilities stay out of request and error logs', async () => {
   expect(rejected.status).toBe(403)
 
   // Storage failing mid-upload (e.g. the backend is unreachable) is logged as an error.
+  const pending = await storage.createUpload({
+    key: `request-logging-failure-${randomUUID()}`,
+    version: 'v1', scope: 'refs/heads/main', repoId: '123',
+  })
+  if (!pending) throw new Error('createUpload returned nothing')
+  const pendingUrl = `http://localhost:${port}/upload/${pending.id}?sig=${pending.capability}`
   vi.spyOn(storage.adapter, 'uploadStream').mockRejectedValue(new Error('storage unavailable'))
   const blockId = Buffer.from(`${randomUUID()}000000000001`).toString('base64')
-  const failed = await fetch(`${url}&comp=block&blockid=${encodeURIComponent(blockId)}`, {
+  const failed = await fetch(`${pendingUrl}&comp=block&blockid=${encodeURIComponent(blockId)}`, {
     method: 'PUT',
     body: 'part',
   })
@@ -125,5 +131,6 @@ test('upload capabilities stay out of request and error logs', async () => {
   expect(logged).toContain('storage unavailable')
   expect(logged).not.toContain('sig=')
   expect(logged).not.toContain(created.capability)
+  expect(logged).not.toContain(pending.capability)
   expect(logged).not.toContain(forged)
 })

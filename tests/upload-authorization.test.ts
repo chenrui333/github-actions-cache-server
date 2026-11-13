@@ -137,12 +137,18 @@ describe('upload URL authorization', () => {
     const key = `upload-auth-${crypto.randomUUID()}`
     const url = await createUpload(token, key)
     const chunks = [crypto.randomBytes(2048), crypto.randomBytes(1024)]
+    const ids = chunks.map((_, index) => blockId(index))
 
     for (const [index, chunk] of chunks.entries()) {
-      const response = await put(withParams(url, { comp: 'block', blockid: blockId(index) }), chunk)
+      const response = await put(withParams(url, { comp: 'block', blockid: ids[index]! }), chunk)
       expect(response.status).toBe(201)
     }
-    expect(await put(withParams(url, { comp: 'blocklist' }))).toMatchObject({ status: 201 })
+    const manifest = Buffer.from(
+      `<BlockList>${ids.map((id) => `<Latest>${id}</Latest>`).join('')}</BlockList>`,
+    )
+    expect(await put(withParams(url, { comp: 'blocklist' }), manifest)).toMatchObject({
+      status: 201,
+    })
 
     expect(await finalize(token, key)).toBe(200)
     const downloaded = await downloadEntry(token, key)

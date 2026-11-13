@@ -6,6 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { getDatabase } from '~/lib/db'
 import { getStorage } from '~/lib/storage'
+import { completeFixtureUpload, stageFixturePart } from './upload-fixture'
 
 const PART_COUNT = 3
 const PART_BYTES = 1024 * 1024
@@ -18,8 +19,8 @@ async function createUnmergedEntry() {
   const upload = await storage.createUpload(entry)
   if (!upload) throw new Error('createUpload returned nothing')
   for (let i = 0; i < PART_COUNT; i++)
-    await storage.uploadPart(upload.id, i, Readable.from([Buffer.alloc(PART_BYTES, i)]))
-  await storage.completeUpload(entry)
+    await stageFixturePart(storage, upload, i, Readable.from([Buffer.alloc(PART_BYTES, i)]))
+  await completeFixtureUpload(storage, upload!)
   return db
     .selectFrom('cache_entries')
     .where('key', '=', key)

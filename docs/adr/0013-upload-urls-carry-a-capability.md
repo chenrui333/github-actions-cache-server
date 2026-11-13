@@ -9,3 +9,33 @@ Twirp calls are authorized by the Actions runtime token (`getCacheScope`), but t
 The capability lives in the query because every client we support treats the signed URL as an Azure SAS URL: `@actions/cache` and `go-actions-cache` keep the query and append `comp`/`blockid`, and OpenDAL (sccache) requires a query and re-sends it as the SAS. Only its SHA-256 is stored (`uploads.capabilityHash`), compared in constant time, so neither the database nor its debug query log can reproduce a working URL. Request logs record paths without their query string, and upload errors are logged by the route rather than left to Nitro, whose unhandled-error log includes the request URL. Upload URLs requested with a method other than `PUT` get `405` instead of falling through to the Results Passthrough, which would forward the capability upstream.
 
 We rejected an HMAC over the Upload id: it needs a secret shared by every worker and kept across restarts, which this server has no place for, while a stored random value needs nothing new. Uploads created before the migration have no capability, so their URLs stop accepting Parts; they are short-lived and `cleanup:uploads` removes them once idle.
+
+## Authenticated completion, not key-only publication
+
+The capability must fence the complete payload, not just individual writes.
+A whole Put Blob carries the upload ID and capability and declares one complete
+HTTP body. A Put Block List carries that same generation and the client's exact
+ordered manifest after staging. Publish only successfully persisted immutable
+revisions referenced by that authenticated boundary. Opaque IDs are not numeric
+indexes; repeated IDs repeat bytes and omitted staged blocks are not appended.
+Reject truncated bodies, unavailable references and concurrent unfinished writes.
+
+Twirp Finalize has only key/version/size plus repository/ref authorization, not an
+upload generation. It is therefore a read-only acknowledgment of an existing
+completion receipt. An old or same-token finalizer cannot delete an empty
+successor, publish its first part, or choose arbitrary current staged data.
+This uses existing GitHub/BuildKit/OpenDAL transports without a new client nonce
+or an unproved creator-token lifetime assumption.
+
+Completion receipts retain the generation's capability hash and completion
+identity under the Storage Location lifecycle. Retries may acknowledge the same
+immutable completion; a different payload or manifest cannot rewrite it.
+Stage attempts use distinct physical revisions, so a late/retried writer cannot
+overwrite a published Part. Key/ref/repository fences and V1 passthrough remain.
+
+Only an explicitly requested, unambiguous NULL-capability reservation idle for
+more than seven days may be retired; modern and active reservations do not
+expire through this path. It removes metadata only, not payloads or other keys.
+This does not change the global cleanup-disable decision. The new ordered-Part
+migration is forward-only and requires a separately approved writer/backup/client
+drain boundary, as documented in the candidate patch notes.

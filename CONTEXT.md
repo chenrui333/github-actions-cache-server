@@ -32,7 +32,9 @@ The ordering value for Capacity-based Eviction: a cache payload's most recent Ca
 _Avoid_: Cache age
 
 **Upload**:
-Cache data that is being received but has not yet become a Cache Entry.
+Cache data that is being received but has not yet become a Cache Entry. An
+authenticated whole-PUT or explicit block-list completion publishes its exact
+immutable generation; a key-only Finalize only acknowledges completed data.
 
 **Storage Location**:
 The stored data belonging to a Cache Entry.
