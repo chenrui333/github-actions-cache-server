@@ -259,5 +259,45 @@ export function migrations(
         await db.schema.alterTable('uploads').dropColumn('capabilityHash').execute()
       },
     },
+    $9_authenticated_upload_completion: {
+      async up(db) {
+        const idType = driver === 'mysql' ? 'varchar(36)' : 'text'
+        await db.schema.alterTable('storage_locations').addColumn('partNamesJson', 'text').execute()
+        await db.schema
+          .createTable('upload_parts')
+          .addColumn('id', idType, (col) => col.primaryKey())
+          .addColumn('uploadId', 'bigint', (col) =>
+            col.notNull().references('uploads.id').onDelete('cascade'),
+          )
+          .addColumn('blockId', 'varchar(88)')
+          .addColumn('revision', 'integer', (col) => col.notNull())
+          .addColumn('partName', 'varchar(36)', (col) => col.notNull())
+          .addColumn('sizeBytes', 'bigint')
+          .addColumn('digest', 'varchar(64)')
+          .execute()
+        await db.schema
+          .createIndex('idx_upload_parts_generation')
+          .on('upload_parts')
+          .columns(['uploadId', 'blockId', 'revision'])
+          .execute()
+        await db.schema
+          .createTable('upload_receipts')
+          .addColumn('uploadId', 'bigint', (col) => col.notNull())
+          .addColumn('capabilityHash', 'varchar(64)', (col) => col.notNull())
+          .addColumn('locationId', idType, (col) =>
+            col.notNull().references('storage_locations.id').onDelete('cascade'),
+          )
+          .addColumn('kind', 'varchar(8)', (col) => col.notNull())
+          .addColumn('completionHash', 'varchar(64)', (col) => col.notNull())
+          .addColumn('sizeBytes', 'bigint', (col) => col.notNull())
+          .addPrimaryKeyConstraint('pk_upload_receipts_generation', ['uploadId', 'capabilityHash'])
+          .execute()
+      },
+      async down() {
+        throw new Error(
+          'Authenticated upload completion is forward-only: older binaries cannot read ordered immutable Parts. Restore an explicitly approved pre-migration backup; do not drop the completion metadata.',
+        )
+      },
+    },
   } satisfies Record<string, Migration>
 }

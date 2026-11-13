@@ -46,6 +46,7 @@ export const storageLocationSchema = z.object({
   partsDeletedAt: z.number().nullable(),
   lastDownloadedAt: z.number().nullable(),
   sizeBytes: z.number().nullable(),
+  partNamesJson: z.string().nullable(),
 })
 export type StorageLocation = z.infer<typeof storageLocationSchema>
 
@@ -82,12 +83,33 @@ export const uploadSchema = z.object({
 })
 type Upload = z.infer<typeof uploadSchema>
 
+export interface UploadPart {
+  id: string
+  uploadId: number
+  blockId: string | null
+  revision: number
+  partName: string
+  sizeBytes: number | null
+  digest: string | null
+}
+
+export interface UploadReceipt {
+  uploadId: number
+  capabilityHash: string
+  locationId: string
+  kind: 'whole' | 'blocks'
+  completionHash: string
+  sizeBytes: number
+}
+
 export interface Database {
   cache_entries: CacheEntry
   merge_leases: MergeLease
   storage_reader_leases: StorageReaderLease
   storage_locations: StorageLocation
   uploads: Upload
+  upload_parts: UploadPart
+  upload_receipts: UploadReceipt
 }
 
 const dbLogger = logger.withTag('db')
