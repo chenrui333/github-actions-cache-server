@@ -1,0 +1,54 @@
+CHANGELOG.md
+  h_9df9c32c3f321d 1-83
+CONTEXT.md
+  h_9df9c32c3f321d 37-38
+README.md
+  h_9df9c32c3f321d 56,58-61
+docs/adr/0013-upload-urls-carry-a-capability.md
+  h_9df9c32c3f321d 27-41,49-55
+lib/db.ts
+  h_9df9c32c3f321d 83,95
+lib/migrations.ts
+  h_9df9c32c3f321d 265-266,282
+lib/scope.ts
+  h_9df9c32c3f321d 138-139
+lib/storage-lifecycle.ts
+  h_9df9c32c3f321d 7,134,141-142
+lib/storage.ts
+  h_9df9c32c3f321d 601
+lib/uploads.ts
+  h_9df9c32c3f321d 19-49,116-117,139,161-192,195,199-200,205-209,222,233,340-342,419,443-451,525
+package.json
+  h_9df9c32c3f321d 4
+routes/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry.post.ts
+  h_9df9c32c3f321d 13,26-32
+tasks/cleanup/uploads.ts
+  h_9df9c32c3f321d 42-54,62-63
+tests/authenticated-upload-completion.test.ts
+  h_9df9c32c3f321d 7,12,531-535,645-763
+tests/authenticated-upload-migration.test.ts
+  h_9df9c32c3f321d 70-73,101-104
+tests/cache-entry-matching.test.ts
+  h_9df9c32c3f321d 238-240,251-254
+tests/direct-download-auth.test.ts
+  h_9df9c32c3f321d 8,15,180-181,360-490
+tests/eager-merge.test.ts
+  h_9df9c32c3f321d 116-154
+tests/request-logging.test.ts
+  h_9df9c32c3f321d 101-103
+tests/storage-lifecycle.test.ts
+  h_9df9c32c3f321d 132-134,158-162
+tests/twirp-protobuf.test.ts
+  h_9df9c32c3f321d 18,28,100-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "133ab5a207daf17816877e6861bf224e88f77126",
+  "prompts": {},
+  "humans": {
+    "h_9df9c32c3f321d": {
+      "author": "Rui Chen <rui@chenrui.dev>"
+    }
+  }
+}
