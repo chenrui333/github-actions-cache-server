@@ -98,7 +98,9 @@ test('upload capabilities stay out of request and error logs', async () => {
   // Storage failing mid-upload (e.g. the backend is unreachable) is logged as an error.
   const pending = await storage.createUpload({
     key: `request-logging-failure-${randomUUID()}`,
-    version: 'v1', scope: 'refs/heads/main', repoId: '123',
+    version: 'v1',
+    scope: 'refs/heads/main',
+    repoId: '123',
   })
   if (!pending) throw new Error('createUpload returned nothing')
   const pendingUrl = `http://localhost:${port}/upload/${pending.id}?sig=${pending.capability}`

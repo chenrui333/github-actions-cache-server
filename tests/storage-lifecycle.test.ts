@@ -129,8 +129,9 @@ describe('storage lifecycle reconciliation', () => {
       const uploads = await db.selectFrom('uploads').select('folderName').execute()
       const owners = new Set([...locations, ...uploads].map(({ folderName }) => folderName))
       const now = Date.now() + 25 * 60 * 60 * 1000
-      const expectedOrphans = inventory.filter(({ folderName, updatedAt }) =>
-        !owners.has(folderName) && updatedAt <= now - 24 * 60 * 60 * 1000,
+      const expectedOrphans = inventory.filter(
+        ({ folderName, updatedAt }) =>
+          !owners.has(folderName) && updatedAt <= now - 24 * 60 * 60 * 1000,
       )
       const expectedNames = new Set(expectedOrphans.map(({ folderName }) => folderName))
       expect(expectedNames.has(orphanedFolder)).toBe(true)
@@ -154,8 +155,11 @@ describe('storage lifecycle reconciliation', () => {
       expect(await adapter.countFilesInFolder(`${orphanedFolder}/parts`)).toBe(0)
       const after = await adapter.listStorageFolders()
       expect(new Set(after.map(({ folderName }) => folderName))).toEqual(
-        new Set(inventory.filter(({ folderName }) => !expectedNames.has(folderName))
-          .map(({ folderName }) => folderName)),
+        new Set(
+          inventory
+            .filter(({ folderName }) => !expectedNames.has(folderName))
+            .map(({ folderName }) => folderName),
+        ),
       )
     } finally {
       await db.deleteFrom('uploads').where('id', '=', uploadId).execute()

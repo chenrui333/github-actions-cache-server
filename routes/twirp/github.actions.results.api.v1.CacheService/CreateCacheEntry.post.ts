@@ -10,7 +10,7 @@ const bodySchema = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const { scopes, repoId } = await getCacheScope(event)
+  const { scopes, repoId, publicationExpiresAt } = await getCacheScope(event)
 
   const { key, version } = await readTwirpRequest(
     event,
@@ -23,7 +23,13 @@ export default defineEventHandler(async (event) => {
   if (!writeScope)
     throw createError({ statusCode: 403, message: 'No scope with write permission found' })
 
-  const upload = await storage.createUpload({ key, version, scope: writeScope.Scope, repoId })
+  const upload = await storage.createUpload({
+    key,
+    version,
+    scope: writeScope.Scope,
+    repoId,
+    publicationExpiresAt,
+  })
 
   return sendTwirpResponse(
     event,

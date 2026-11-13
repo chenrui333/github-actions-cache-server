@@ -1,16 +1,15 @@
 import type { Kysely } from 'kysely'
 import type { Database } from '~/lib/db'
-import type { Storage } from '~/lib/storage'
 import { Buffer } from 'node:buffer'
 import { createHash, randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import net from 'node:net'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import { SignJWT } from 'jose'
 import { describe, expect, test, vi } from 'vitest'
 import { z } from 'zod'
 import { getDatabase } from '~/lib/db'
-import { getStorage } from '~/lib/storage'
+import { getStorage, Storage } from '~/lib/storage'
 import { deleteUploadIfIdle } from '~/lib/storage-lifecycle'
 
 const API = 'http://localhost:3000/twirp/github.actions.results.api.v1.CacheService'
@@ -529,8 +528,11 @@ describe('generation integrity and retirement boundaries', () => {
   test('failed and active streaming attempts are not completion proof or idle-cleanup targets', async () => {
     const state = await fixture()
     const ancient = Date.now() - 25 * 86_400_000
-    await state.db.updateTable('uploads').set({ createdAt: ancient, lastPartUploadedAt: ancient })
-      .where('id', '=', state.id).execute()
+    await state.db
+      .updateTable('uploads')
+      .set({ createdAt: ancient, lastPartUploadedAt: ancient })
+      .where('id', '=', state.id)
+      .execute()
     const stream = new PassThrough()
     const attempt = state.storage.stageBlock(state.id, state.capability, blockId(12), stream)
     await vi.waitFor(async () => {
@@ -639,5 +641,124 @@ describe('generation integrity and retirement boundaries', () => {
         .where('key', '=', duplicate.identity.key)
         .execute(),
     ).toEqual(before)
+  })
+
+  test('a reconstructed writer recovers only expired crashed attempts before exact retransmission', async () => {
+    const state = await fixture()
+    // Persist the crash boundary directly: no running promise/catch handler exists.
+    await state.db
+      .insertInto('upload_parts')
+      .values({
+        id: randomUUID(),
+        uploadId: state.id,
+        blockId: blockId(15),
+        revision: 1,
+        partName: randomUUID(),
+        sizeBytes: null,
+        digest: null,
+        leaseExpiresAt: Date.now() - 1,
+      })
+      .execute()
+    await state.db
+      .updateTable('uploads')
+      .set({ startedPartUploadCount: 1 })
+      .where('id', '=', state.id)
+      .execute()
+    const restarted = await Storage.fromEnv()
+    await restarted.stageBlock(
+      state.id,
+      state.capability,
+      blockId(15),
+      Readable.from('retransmitted'),
+    )
+    expect(await responseStatus(commit(state, [blockId(15)]))).toBe(201)
+    expect(await restoredText(state)).toBe('retransmitted')
+  })
+
+  test('an expired writer resuming after recovery cannot settle or overwrite a new immutable revision', async () => {
+    const state = await fixture()
+    const stream = new PassThrough()
+    const pending = state.storage.stageBlock(state.id, state.capability, blockId(16), stream)
+    // Attach rejection handling before deliberately fencing the attempt.
+    const outcome = pending.then(
+      () => undefined,
+      (err: unknown) => err,
+    )
+    await vi.waitFor(async () => {
+      expect(
+        await state.db
+          .selectFrom('upload_parts')
+          .select('id')
+          .where('uploadId', '=', state.id)
+          .where('sizeBytes', 'is', null)
+          .execute(),
+      ).toHaveLength(1)
+    })
+    await state.db
+      .updateTable('upload_parts')
+      .set({ leaseExpiresAt: Date.now() - 1 })
+      .where('uploadId', '=', state.id)
+      .where('sizeBytes', 'is', null)
+      .execute()
+    const restarted = await Storage.fromEnv()
+    await restarted.stageBlock(
+      state.id,
+      state.capability,
+      blockId(16),
+      Readable.from('authoritative'),
+    )
+    expect(await responseStatus(commit(state, [blockId(16)]))).toBe(201)
+    stream.end('late-abandoned-bytes')
+    expect(await outcome).toBeInstanceOf(Error)
+    expect(await restoredText(state)).toBe('authoritative')
+  })
+
+  test('idle cleanup settles expired attempts but never deletes another live owner', async () => {
+    const state = await fixture()
+    const ancient = Date.now() - 25 * 86_400_000
+    await state.db
+      .updateTable('uploads')
+      .set({ createdAt: ancient, lastPartUploadedAt: ancient, startedPartUploadCount: 2 })
+      .where('id', '=', state.id)
+      .execute()
+    const liveId = randomUUID()
+    for (const [id, leaseExpiresAt] of [
+      [randomUUID(), Date.now() - 1],
+      [liveId, Date.now() + 60_000],
+    ] as const)
+      await state.db
+        .insertInto('upload_parts')
+        .values({
+          id,
+          uploadId: state.id,
+          blockId: blockId(17),
+          revision: id === liveId ? 2 : 1,
+          partName: randomUUID(),
+          sizeBytes: null,
+          digest: null,
+          leaseExpiresAt,
+        })
+        .execute()
+    expect(
+      await state.db.transaction().execute((tx) => deleteUploadIfIdle(tx, state.id, Date.now())),
+    ).toBeUndefined()
+    expect(
+      await state.db
+        .selectFrom('upload_parts')
+        .select('id')
+        .where('uploadId', '=', state.id)
+        .execute(),
+    ).toEqual([{ id: liveId }])
+    await state.db
+      .updateTable('upload_parts')
+      .set({ leaseExpiresAt: Date.now() - 1 })
+      .where('id', '=', liveId)
+      .execute()
+    expect(
+      await state.db.transaction().execute((tx) => deleteUploadIfIdle(tx, state.id, Date.now())),
+    ).toBeTypeOf('string')
+    expect(
+      await state.db.selectFrom('uploads').select('id').where('id', '=', state.id).execute(),
+    ).toHaveLength(0)
   })
 })

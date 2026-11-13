@@ -39,7 +39,19 @@ export default defineTask({
                 eb('createdAt', '<', oneMinuteAgo),
               ]),
             )
-            .whereRef('startedPartUploadCount', '=', 'finishedPartUploadCount')
+            .where((eb) =>
+              eb.or([
+                eb('startedPartUploadCount', '=', eb.ref('finishedPartUploadCount')),
+                eb.exists(
+                  eb
+                    .selectFrom('upload_parts')
+                    .select('id')
+                    .whereRef('upload_parts.uploadId', '=', 'uploads.id')
+                    .where('sizeBytes', 'is', null)
+                    .where('leaseExpiresAt', '<=', Date.now()),
+                ),
+              ]),
+            )
             .where((eb) =>
               eb.not(
                 eb.exists(
@@ -47,7 +59,8 @@ export default defineTask({
                     .selectFrom('upload_parts')
                     .select('id')
                     .whereRef('upload_parts.uploadId', '=', 'uploads.id')
-                    .where('sizeBytes', 'is', null),
+                    .where('sizeBytes', 'is', null)
+                    .where('leaseExpiresAt', '>', Date.now()),
                 ),
               ),
             )

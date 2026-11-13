@@ -24,14 +24,34 @@ Twirp Finalize has only key/version/size plus repository/ref authorization, not 
 upload generation. It is therefore a read-only acknowledgment of an existing
 completion receipt. An old or same-token finalizer cannot delete an empty
 successor, publish its first part, or choose arbitrary current staged data.
-This uses existing GitHub/BuildKit/OpenDAL transports without a new client nonce
-or an unproved creator-token lifetime assumption.
+This uses existing GitHub/BuildKit/OpenDAL transports without a new client nonce.
+When token verification is enabled, new generations retain only the verified
+creator JWT expiration as `publicationExpiresAt`, never the bearer. Whole PUT
+and manifest publication recheck that deadline under the generation transaction,
+including after asynchronous storage and immediately before committing visibility.
+The same fixed runtime bearer authorizes Create and Finalize in the supported
+clients; capability possession must not extend publication beyond its verified
+deadline. Receipt retries cannot publish new data after expiry.
+
+Expiry-unknown pre-upgrade generations cannot safely acquire an invented
+deadline. They fail closed with verification enabled and require the explicitly
+approved drain/maintenance boundary in the changelog. This is not transparent
+rolling-upgrade compatibility or security-owner approval. Validation-disabled
+development mode still has no trusted JWT deadline; it must not be used in
+production.
 
 Completion receipts retain the generation's capability hash and completion
 identity under the Storage Location lifecycle. Retries may acknowledge the same
 immutable completion; a different payload or manifest cannot rewrite it.
 Stage attempts use distinct physical revisions, so a late/retried writer cannot
 overwrite a published Part. Key/ref/repository fences and V1 passthrough remain.
+
+Each unfinished revision has its own 60-second renewable attempt lease. Writers
+renew every ten seconds under the generation lock. Recovery settles only expired
+attempts as failed, never promotes their objects, and never clears another live
+worker. A resumed expired writer cannot renew or settle its removed revision;
+retransmission uses a new immutable name. This lease fences storage attempts, not
+JWT authority or reservation retirement.
 
 Only an explicitly requested, unambiguous NULL-capability reservation idle for
 more than seven days may be retired; modern and active reservations do not

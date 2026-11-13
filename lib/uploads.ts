@@ -16,6 +16,37 @@ import { UploadProtocolError, validateBlockId } from './upload-protocol'
 // of retirement margin; it is NOT a generic lease or a JWT-expiry assertion.
 // https://docs.github.com/en/actions/reference/limits
 const LEGACY_RETIREMENT_MS = 7 * 24 * 60 * 60 * 1000
+const ATTEMPT_LEASE_MS = 60_000
+const ATTEMPT_RENEW_MS = 10_000
+
+function assertPublicationAuthorized(upload: { publicationExpiresAt: number | null }) {
+  if (upload.publicationExpiresAt === null) {
+    if (!env.SKIP_TOKEN_VALIDATION)
+      throw new UploadProtocolError(403, 'Upload requires the approved pre-upgrade drain boundary')
+  } else if (
+    !Number.isFinite(upload.publicationExpiresAt) ||
+    Date.now() >= upload.publicationExpiresAt
+  )
+    throw new UploadProtocolError(403, 'Upload publication authorization expired')
+}
+
+/** Caller holds the upload lock. Expiry fences the exact attempt, not other workers. */
+export async function recoverExpiredUploadParts(tx: Transaction<Database>, uploadId: number) {
+  const removed = await tx
+    .deleteFrom('upload_parts')
+    .where('uploadId', '=', uploadId)
+    .where('sizeBytes', 'is', null)
+    .where('leaseExpiresAt', '<=', Date.now())
+    .executeTakeFirst()
+  const count = Number(removed.numDeletedRows)
+  if (count > 0)
+    await tx
+      .updateTable('uploads')
+      .set({ finishedPartUploadCount: sql`${sql.ref('finishedPartUploadCount')} + ${count}` })
+      .where('id', '=', uploadId)
+      .execute()
+  return count
+}
 
 export interface UploadPublication {
   receipt: UploadReceipt
@@ -82,6 +113,8 @@ async function receivePart(
         if (await receipt(tx, uploadId, digest))
           throw new UploadProtocolError(409, 'Upload is already committed')
         const upload = await lockUpload(tx, uploadId, digest)
+        assertPublicationAuthorized(upload)
+        await recoverExpiredUploadParts(tx, uploadId)
         if (blockId !== null) {
           const first = await tx
             .selectFrom('upload_parts')
@@ -103,6 +136,7 @@ async function receivePart(
           partName: randomUUID(),
           sizeBytes: null,
           digest: null,
+          leaseExpiresAt: Date.now() + ATTEMPT_LEASE_MS,
         }
         await tx.insertInto('upload_parts').values(part).execute()
         await tx
@@ -124,18 +158,55 @@ async function receivePart(
       }
     })(),
   )
+  let renewal: Promise<void> | undefined
+  const leaseTimer = setInterval(() => {
+    renewal ??= retryOnLockConflict(() =>
+      db.transaction().execute(async (tx) => {
+        await lockUpload(tx, uploadId, digest)
+        const now = Date.now()
+        const updated = await tx
+          .updateTable('upload_parts')
+          .set({ leaseExpiresAt: now + ATTEMPT_LEASE_MS })
+          .where('id', '=', part.id)
+          .where('uploadId', '=', uploadId)
+          .where('sizeBytes', 'is', null)
+          .where('leaseExpiresAt', '>', now)
+          .executeTakeFirst()
+        if (Number(updated.numUpdatedRows) !== 1)
+          throw new UploadProtocolError(409, 'Upload attempt lease expired')
+      }),
+    )
+      .catch((err: unknown) => {
+        measured.destroy(
+          err instanceof Error ? err : new Error('Upload attempt lease renewal failed'),
+        )
+      })
+      .finally(() => {
+        renewal = undefined
+      })
+  }, ATTEMPT_RENEW_MS)
+  leaseTimer.unref()
+  const stopRenewal = async () => {
+    clearInterval(leaseTimer)
+    await renewal
+  }
   try {
     await adapter.uploadStream(`${upload.folderName}/parts/${part.partName}`, measured)
+    await stopRenewal()
     const finished = { ...part, sizeBytes, digest: hash?.digest('hex') ?? null }
     await retryOnLockConflict(() =>
       db.transaction().execute(async (tx) => {
-        await lockUpload(tx, uploadId, digest)
-        await tx
+        assertPublicationAuthorized(await lockUpload(tx, uploadId, digest))
+        const updated = await tx
           .updateTable('upload_parts')
           .set({ sizeBytes, digest: finished.digest })
           .where('id', '=', part.id)
           .where('uploadId', '=', uploadId)
-          .execute()
+          .where('sizeBytes', 'is', null)
+          .where('leaseExpiresAt', '>', Date.now())
+          .executeTakeFirst()
+        if (Number(updated.numUpdatedRows) !== 1)
+          throw new UploadProtocolError(409, 'Upload attempt lease expired')
         await tx
           .updateTable('uploads')
           .set({
@@ -148,6 +219,7 @@ async function receivePart(
     )
     return finished
   } catch (err) {
+    await stopRenewal()
     measured.destroy()
     // An unsuccessful immutable revision is not eligible for a manifest.
     // Physical debris remains under the existing orphan/parts lifecycle.
@@ -158,6 +230,7 @@ async function receivePart(
           const deleted = await tx
             .deleteFrom('upload_parts')
             .where('id', '=', part.id)
+            .where('sizeBytes', 'is', null)
             .executeTakeFirst()
           if (Number(deleted.numDeletedRows) === 1)
             // Settled attempts are not completion proof; only the explicit
@@ -264,6 +337,9 @@ async function publishUpload(
           return { receipt: prior, sizes: [] }
         }
         const upload = await lockUpload(tx, uploadId, digest)
+        // Recheck after all body/storage I/O, under the visibility transaction.
+        assertPublicationAuthorized(upload)
+        await recoverExpiredUploadParts(tx, uploadId)
         const staged = await tx
           .selectFrom('upload_parts')
           .selectAll()
@@ -340,6 +416,7 @@ async function publishUpload(
         }
         await tx.insertInto('upload_receipts').values(completed).execute()
         await tx.deleteFrom('uploads').where('id', '=', uploadId).execute()
+        assertPublicationAuthorized(upload)
         return { receipt: completed, location, sizes }
       }),
   )
@@ -363,7 +440,15 @@ export function acknowledgeUpload(
 
 export async function createUpload(
   db: Kysely<Database>,
-  { key, version, scope, repoId }: UploadIdentity,
+  {
+    key,
+    version,
+    scope,
+    repoId,
+    publicationExpiresAt = null,
+  }: UploadIdentity & {
+    publicationExpiresAt?: number | null
+  },
 ) {
   return retryOnLockConflict(() =>
     db
@@ -437,6 +522,7 @@ export async function createUpload(
             finishedPartUploadCount: 0,
             startedPartUploadCount: 0,
             capabilityHash: capabilityDigest(capability),
+            publicationExpiresAt,
           })
           .execute()
         return { id, capability }

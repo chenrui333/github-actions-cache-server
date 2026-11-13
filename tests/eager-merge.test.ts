@@ -113,4 +113,43 @@ describe('eager merge', () => {
       }
     },
   )
+
+  test.skipIf((process.env.VITEST_STORAGE_DRIVER ?? 'filesystem') === 'filesystem')(
+    'server-side composition preserves duplicate references and omits unselected staged parts',
+    { timeout: 60_000 },
+    async () => {
+      const storage = await Storage.fromEnv()
+      const key = randomUUID()
+      const upload = await storage.createUpload({ key, ...scope })
+      if (!upload) throw new Error('createUpload returned nothing')
+      const a = Buffer.from('opaque-a').toString('base64')
+      const b = Buffer.from('opaque-b').toString('base64')
+      const extra = Buffer.from('unused-x').toString('base64')
+      const payload = Buffer.alloc(5 * 1024 * 1024, 'A')
+      await storage.stageBlock(upload.id, upload.capability, a, Readable.from(payload))
+      await storage.stageBlock(upload.id, upload.capability, b, Readable.from('B'))
+      await storage.stageBlock(upload.id, upload.capability, extra, Readable.from('EXCLUDED'))
+      const compose = vi.spyOn(storage.adapter.composeParts!, 'run')
+      await storage.commitBlockList(
+        upload.id,
+        upload.capability,
+        [a, a, b].map((id) => ({ id, source: 'Latest' })),
+      )
+      await storage.waitForOngoingMerges()
+      expect(compose).toHaveBeenCalledOnce()
+      const db = await getDatabase()
+      const location = await db
+        .selectFrom('storage_locations')
+        .innerJoin('cache_entries', 'cache_entries.locationId', 'storage_locations.id')
+        .selectAll('storage_locations')
+        .where('cache_entries.key', '=', key)
+        .executeTakeFirstOrThrow()
+      const actual = await mergedBytes(storage, location.folderName)
+      expect(actual.length).toBe(payload.length * 2 + 1)
+      expect(actual.subarray(0, payload.length).equals(payload)).toBe(true)
+      expect(actual.subarray(payload.length, payload.length * 2).equals(payload)).toBe(true)
+      expect(actual.at(-1)).toBe('B'.codePointAt(0))
+      compose.mockRestore()
+    },
+  )
 })

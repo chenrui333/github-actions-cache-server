@@ -598,7 +598,7 @@ export class Storage {
     }
   }
 
-  createUpload(identity: UploadIdentity) {
+  createUpload(identity: UploadIdentity & { publicationExpiresAt?: number | null }) {
     return uploads.createUpload(this.db, identity)
   }
 

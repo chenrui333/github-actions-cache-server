@@ -67,7 +67,10 @@ test('completion migration preserves legacy data, adds empty generation metadata
     const upload = await db.selectFrom('uploads').selectAll().executeTakeFirstOrThrow()
     const upgraded = await migrator.migrateToLatest()
     expect(upgraded.error).toBeUndefined()
-    expect(await db.selectFrom('uploads').selectAll().executeTakeFirst()).toEqual(upload)
+    expect(await db.selectFrom('uploads').selectAll().executeTakeFirst()).toEqual({
+      ...upload,
+      publicationExpiresAt: null,
+    })
     const preserved = await db.selectFrom('storage_locations').selectAll().executeTakeFirstOrThrow()
     expect(preserved.partNamesJson).toBeNull()
     expect(await db.selectFrom('cache_entries').select('id').execute()).toEqual([
@@ -95,7 +98,10 @@ test('completion migration preserves legacy data, adds empty generation metadata
     })
     const oldBinary = await oldProvider.migrateToLatest()
     expect(oldBinary.error).toBeDefined()
-    expect(await db.selectFrom('uploads').selectAll().executeTakeFirst()).toEqual(upload)
+    expect(await db.selectFrom('uploads').selectAll().executeTakeFirst()).toEqual({
+      ...upload,
+      publicationExpiresAt: null,
+    })
   } finally {
     await db.destroy()
   }

@@ -4,6 +4,7 @@ import type { StorageAdapter } from './storage'
 import pLimit from 'p-limit'
 import { env } from './env'
 import { logger } from './logger'
+import { recoverExpiredUploadParts } from './uploads'
 
 export interface OrphanedStorageSummary {
   inspectedFolders: number
@@ -130,13 +131,15 @@ export async function deleteUploadIfIdle(
     (upload.lastPartUploadedAt !== null && upload.lastPartUploadedAt >= cutoff)
   )
     return
+  const recovered = await recoverExpiredUploadParts(tx, uploadId)
   const pending = await tx
     .selectFrom('upload_parts')
     .select('id')
     .where('uploadId', '=', uploadId)
     .where('sizeBytes', 'is', null)
     .executeTakeFirst()
-  if (pending || upload.startedPartUploadCount !== upload.finishedPartUploadCount) return
+  if (pending || upload.startedPartUploadCount !== upload.finishedPartUploadCount + recovered)
+    return
   await tx.deleteFrom('uploads').where('id', '=', uploadId).execute()
   return upload.folderName
 }

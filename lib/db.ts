@@ -80,6 +80,7 @@ export const uploadSchema = z.object({
   finishedPartUploadCount: z.number(),
   folderName: z.string(),
   capabilityHash: z.string().nullable(),
+  publicationExpiresAt: z.number().nullable(),
 })
 type Upload = z.infer<typeof uploadSchema>
 
@@ -91,6 +92,7 @@ export interface UploadPart {
   partName: string
   sizeBytes: number | null
   digest: string | null
+  leaseExpiresAt: number
 }
 
 export interface UploadReceipt {

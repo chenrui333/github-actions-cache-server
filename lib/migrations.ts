@@ -262,6 +262,8 @@ export function migrations(
     $9_authenticated_upload_completion: {
       async up(db) {
         const idType = driver === 'mysql' ? 'varchar(36)' : 'text'
+        // NULL means historical/unchecked authority, never a guessed JWT expiry.
+        await db.schema.alterTable('uploads').addColumn('publicationExpiresAt', 'bigint').execute()
         await db.schema
           .alterTable('storage_locations')
           .addColumn('partNamesJson', driver === 'mysql' ? sql`longtext` : 'text')
@@ -277,6 +279,7 @@ export function migrations(
           .addColumn('partName', 'varchar(36)', (col) => col.notNull())
           .addColumn('sizeBytes', 'bigint')
           .addColumn('digest', 'varchar(64)')
+          .addColumn('leaseExpiresAt', 'bigint', (col) => col.notNull())
           .execute()
         await db.schema
           .createIndex('idx_upload_parts_generation')
